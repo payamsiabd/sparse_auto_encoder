@@ -8,6 +8,7 @@ accelerate>=0.33
 pillow
 pyyaml
 numpy
+datasets>=2.19   # for scripts/00_download_mathvista.py
 
 # Analysis / visualization (Sec. 4.3, Fig. 2-3)
 umap-learn>=0.5
