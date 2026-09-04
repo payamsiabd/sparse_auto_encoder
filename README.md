@@ -148,6 +148,18 @@ setting. Both backends write the same `responses.jsonl`, so script 03
 onward can't tell (or care) which one produced it — see
 `rise/vllm_backend.py`'s module docstring for the full reasoning.
 
+**Troubleshooting `--generation.backend vllm`:** if you see `RuntimeError:
+Cannot re-initialize CUDA in forked subprocess`, something touched CUDA
+in the main process before vLLM's engine (which forks/spawns a worker
+subprocess) got a chance to start — vLLM's worker needs to inherit a
+completely uninitialized CUDA context. `rise.vllm_backend.load_vllm`
+already guards against the known cause of this in this codebase (it
+sets `VLLM_WORKER_MULTIPROC_METHOD=spawn`, and `scripts/02` skips its
+own CUDA-touching `set_seed()` call on the vLLM path) — if you still
+hit it, something else in your environment (a custom launcher, an
+earlier line in a notebook, etc.) is initializing CUDA first; move that
+after generation, or run generation in its own process.
+
 Script 03 re-feeds `(question, full_response)` through the model (via
 `transformers`, always) in a single forward pass (no sampling) and
 reads off `hidden_states[l]` at the token spanning each `"\n\n"` step

@@ -38,7 +38,8 @@ from __future__ import annotations
 import base64
 import dataclasses
 import io
-from typing import Any
+import os
+from typing import Any, Optional
 
 from PIL import Image
 
@@ -64,12 +65,31 @@ def load_vllm(
     tensor_parallel_size: int = 1,
     limit_mm_per_prompt: int = 4,
     trust_remote_code: bool = True,
+    seed: Optional[int] = None,
 ) -> VLLMHandle:
     """Load Qwen3-VL-4B-Thinking (or any Qwen3-VL checkpoint, local
     directory or hub id -- same as `rise.utils.load_qwen3_vl`) as a
     vLLM engine. `limit_mm_per_prompt` bounds how many images a single
     prompt may contain (matches this project's multi-image support in
-    `rise.dataset.VisualPrompt.images`)."""
+    `rise.dataset.VisualPrompt.images`).
+
+    IMPORTANT for callers: don't touch CUDA in this process (e.g. via
+    `torch.cuda.manual_seed_all`, or loading a `transformers` model onto
+    a CUDA device) before calling this. vLLM's engine core runs in a
+    subprocess that needs a completely uninitialized CUDA context to
+    fork/spawn from; a CUDA context already active in the parent process
+    causes "Cannot re-initialize CUDA in forked subprocess" (this is the
+    single most common way to break this backend). `seed` is handed to
+    vLLM's own `LLM(seed=...)` instead, which is safe -- vLLM applies it
+    inside the engine's own (separate) process.
+    """
+    # Defense in depth on top of the caller contract above: force vLLM's
+    # engine-core worker to use "spawn" rather than "fork" for its
+    # subprocess, which sidesteps the CUDA-context-inheritance problem
+    # entirely even if something upstream of this call did touch CUDA.
+    # Only set if the user/environment hasn't already chosen a value.
+    os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+
     from vllm import LLM
 
     llm = LLM(
@@ -80,6 +100,7 @@ def load_vllm(
         gpu_memory_utilization=gpu_memory_utilization,
         tensor_parallel_size=tensor_parallel_size,
         limit_mm_per_prompt={"image": limit_mm_per_prompt},
+        seed=seed,
     )
     return VLLMHandle(llm=llm)
 

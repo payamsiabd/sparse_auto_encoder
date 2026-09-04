@@ -35,7 +35,6 @@ from rise.utils import load_qwen3_vl, set_seed
 
 def main() -> None:
     cfg = load_config(Path(__file__).resolve().parents[1] / "configs" / "default.yaml", sys.argv[1:])
-    set_seed(cfg["sae"]["seed"])
 
     prompts = load_prompts(cfg["data"]["prompts_jsonl"], cfg["data"]["image_root"])
     out_dir = Path(cfg["activations"]["out_dir"])
@@ -46,8 +45,17 @@ def main() -> None:
     backend = gen_cfg["backend"]
 
     if backend == "vllm":
+        # Deliberately do NOT call set_seed() (or touch CUDA in any other
+        # way) before this: vLLM's engine core runs in a forked worker
+        # subprocess that must inherit a *completely uninitialized* CUDA
+        # context. torch.cuda.manual_seed_all() inside set_seed() would
+        # initialize one in this (parent) process first, which then makes
+        # the fork fail with "Cannot re-initialize CUDA in forked
+        # subprocess." vLLM seeds itself internally (passed through
+        # below), so skipping our own seeding here is safe.
         responses = _generate_with_vllm(cfg, prompts)
     elif backend == "transformers":
+        set_seed(cfg["sae"]["seed"])
         responses = _generate_with_transformers(cfg, prompts)
     else:
         raise ValueError(f"Unknown generation.backend: {backend!r} (expected 'transformers' or 'vllm')")
@@ -95,6 +103,7 @@ def _generate_with_vllm(cfg: dict, prompts: list[VisualPrompt]) -> list[Generate
         model_id=cfg["model"]["model_id"], dtype=cfg["model"]["dtype"],
         max_model_len=gen_cfg["vllm_max_model_len"], gpu_memory_utilization=gen_cfg["vllm_gpu_memory_utilization"],
         tensor_parallel_size=gen_cfg["vllm_tensor_parallel_size"], limit_mm_per_prompt=gen_cfg["vllm_limit_mm_per_prompt"],
+        seed=cfg["sae"]["seed"],
     )
     return generate_responses_batch(
         handle, prompts, max_new_tokens=gen_cfg["max_new_tokens"], do_sample=gen_cfg["do_sample"],
