@@ -5,7 +5,7 @@ sentence-level steps, and cache everything to disk so extraction
 (script 02) doesn't need to re-run generation.
 
 Usage:
-    python scripts/01_generate_responses.py --config configs/default.yaml
+    python scripts/02_generate_responses.py
 """
 from __future__ import annotations
 

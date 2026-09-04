@@ -5,7 +5,7 @@ token at every step boundary, for every layer requested in the config.
 Reads the cache written by script 01.
 
 Usage:
-    python scripts/02_extract_activations.py --config configs/default.yaml
+    python scripts/03_extract_activations.py
 """
 from __future__ import annotations
 
