@@ -93,7 +93,20 @@ annotate:
 
 geometry:
   out_dir: "runs/mathvista/geometry"
-  top_k_per_step: 1
+  # "stats" (recommended): associate decoder columns with a behavior via
+  # a per-column Mann-Whitney U / Cohen's d / ROC-AUC test (target label's
+  # steps vs. all others), using every step's full activation value.
+  # "argmax": the paper's literal Sec. 4.3 methodology -- credit only a
+  # step's single top-firing latent. With few labeled steps per behavior
+  # this throws away most of the signal and tends to produce small,
+  # noisy-looking clusters -- see rise/feature_stats.py's module docstring.
+  method: "stats"
+  top_k_per_step: 1      # only used when method="argmax"
+  stats_min_auc: 0.6      # only used when method="stats"
+  stats_min_effect: 0.3   # Cohen's d
+  stats_max_p: 0.01       # Bonferroni-corrected across all D columns by default
+  stats_bonferroni: true
+  stats_top_k: 50         # max columns kept per behavior label
 
 intervene:
   layer: 16

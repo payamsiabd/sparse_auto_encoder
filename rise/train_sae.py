@@ -112,7 +112,7 @@ def train_sae(
     total_steps = max(1, len(loader) * config.num_epochs)
     scheduler = _make_lr_scheduler(optimizer, total_steps, config.warmup_frac)
 
-    history: dict[str, list[float]] = {"step": [], "loss": [], "recon_loss": [], "l0": [], "lr": []}
+    history: dict = {"step": [], "loss": [], "recon_loss": [], "l0": [], "lr": [], "input_scale": input_scale}
     step = 0
     for epoch in range(config.num_epochs):
         for (batch,) in loader:
