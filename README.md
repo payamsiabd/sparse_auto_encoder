@@ -32,6 +32,7 @@ plumbing is the main engineering addition here (see `rise/activations.py`).
 | Appendix D, LLM-judge + keyword annotation | `rise/annotate.py` (extended with a 4th class, `visual_reflection`) |
 | 5. Eq. 7, unsupervised entropy-vector discovery | `rise/intervene.py::search_entropy_vector` |
 | 4.2 training data (paper: 500 MATH examples) | `rise/mathvista.py` (this project: MathVista, a visual-reasoning benchmark) |
+| 4.3 column-behavior association (paper: top-1 argmax per step) | `rise/geometry.py::associate_columns_with_behaviors` (`geometry.method: "argmax"`); default is `rise/feature_stats.py`'s per-column statistical test (`"stats"`), a practical deviation -- see that module's docstring |
 
 ## Pipeline
 
@@ -231,12 +232,39 @@ the layer the SAE was trained on -- as **two** geometry views:
 - `geometry_layer16_finegrained.png`: the original 4-way split, which
   you still need for this project's actual goal (isolating *visual*
   reflection specifically) once the binary view confirms reflection
-  clusters at all. If the fine-grained clusters still look noisy even
-  with a properly sparse (`topk`) SAE, it usually means too little
-  data (raise `mathvista.num_samples`) rather than a code problem.
+  clusters at all.
+
+**How columns get associated with a behavior** (`geometry.method`, both
+views above): default is **`"stats"`** — for every decoder column
+independently, a Mann-Whitney U test + Cohen's d + ROC-AUC comparing
+that column's activation on a behavior's steps against every other
+step's (`rise/feature_stats.py`), keeping only columns that clear
+significance thresholds (`geometry.stats_min_auc`/`stats_min_effect`/
+`stats_max_p`, Bonferroni-corrected across all D columns by default).
+`"argmax"` is the paper's literal Sec. 4.3 methodology instead — credit
+only a step's single top-firing latent. With only a modest number of
+labeled steps per behavior (typical for this pipeline's train splits),
+argmax-counting throws away most of the signal (a column that fires
+reliably for a behavior but is rarely *the single strongest* one for
+any given step gets zero credit) and tends to produce small, sparse-
+looking, noisy clusters; `"stats"` uses each step's full activation
+value instead and is modeled on the same statistical machinery a
+mature SAE-based reasoning study
+([GeorgeMLP/reasoning-probing](https://github.com/GeorgeMLP/reasoning-probing),
+which runs the equivalent test against a large *pretrained* SAE) uses
+to rank "reasoning features" — see `rise/feature_stats.py`'s module
+docstring for the full comparison. If both views still look muddy even
+with `"stats"` and a properly sparse SAE, that's much more likely a
+data-volume problem than a code problem: this pipeline's default
+`mathvista.num_samples: 200` (subsampled *before* the 80/20 train/test
+split, so ~160 train prompts) is a tractable first run, not a
+statistically well-powered one for a `d_hidden: 2048` dictionary --
+raise it substantially (or set to `null` for the whole `testmini` split)
+once you've confirmed the mechanics work end-to-end.
 
 Also writes `runs/mathvista/geometry/association_layer16.json` — the
-**fine-grained** column↔behavior mapping (`rise.geometry.ColumnAssociation`)
+**fine-grained** column↔behavior mapping (`rise.geometry.ColumnAssociation`,
+regardless of which `geometry.method` produced it)
 — the artifact steps 4 and 5 below build behavior vectors from, so
 nothing downstream needs to recompute it from the train activations.
 
@@ -330,6 +358,12 @@ had none of those available (see the environment note above).
   into reflection/others (including that it doesn't mutate its input
   and that agreement/disagreement between two annotation sets changes
   correctly once both are binarized).
+- `tests/test_feature_stats.py` validates `rise/feature_stats.py`'s
+  statistical column association against synthetic data with a known
+  ground truth (a couple of dictionary columns genuinely discriminate
+  between two groups, the rest are pure noise): confirms it identifies
+  exactly the true signal columns and correctly rejects the noise ones
+  under Bonferroni-corrected significance thresholds.
 - `tests/test_activations_locate.py` validates the trickiest piece of
   `rise/activations.py` -- correctly locating each `"\n\n"` step
   delimiter's token position *after* image-token expansion -- against a

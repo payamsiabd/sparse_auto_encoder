@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rise.annotate import KeywordAnnotator, annotate_steps
 from rise.config import load_config
 from rise.dataset import build_messages, load_images, load_prompts
-from rise.geometry import associate_columns_with_behaviors
+from rise.feature_stats import build_association
 from rise.intervene import build_behavior_vector, generate_with_intervention
 from rise.store import load_layer_activations, load_steps_metadata
 from rise.train_sae import load_sae
@@ -43,7 +43,7 @@ def main() -> None:
     annotations = annotate_steps(steps_meta, KeywordAnnotator())
     activations = load_layer_activations(cfg["activations"]["out_dir"], layer)
 
-    assoc = associate_columns_with_behaviors(sae, activations, annotations, input_scale=meta["input_scale"])
+    assoc = build_association(cfg["geometry"], sae, activations, annotations, input_scale=meta["input_scale"])
     vector = build_behavior_vector(
         sae.reasoning_vectors(), assoc.behavior_column_counts,
         target_label=iv_cfg["target_label"], top_k=iv_cfg["top_k_columns"],

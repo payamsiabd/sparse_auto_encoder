@@ -17,7 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rise.annotate import KeywordAnnotator, annotate_steps
 from rise.config import load_config
-from rise.geometry import associate_columns_with_behaviors, normalized_silhouette_scores
+from rise.feature_stats import build_association
+from rise.geometry import normalized_silhouette_scores
 from rise.store import load_layer_activations, load_steps_metadata
 from rise.train_sae import TrainConfig, train_sae
 
@@ -40,11 +41,12 @@ def main() -> None:
             normalize_inputs=sae_cfg["normalize_inputs"], seed=sae_cfg["seed"],
         )
         out_dir = Path(sae_cfg["out_dir"]) / f"layer{layer:02d}"
-        sae, _ = train_sae(activations, train_cfg, out_dir=out_dir)
+        sae, history = train_sae(activations, train_cfg, out_dir=out_dir)
 
-        assoc = associate_columns_with_behaviors(
-            sae, activations, annotations, input_scale=1.0, top_k_per_step=geo_cfg["top_k_per_step"],
-        )
+        # sae was trained on activations rescaled by history["input_scale"]
+        # (Sec. normalize_inputs); encode() must see inputs in the same
+        # units, not the raw (unscaled) `activations` tensor as-is.
+        assoc = build_association(geo_cfg, sae, activations, annotations, input_scale=history["input_scale"])
         decoder_columns = sae.reasoning_vectors().numpy()
         scores = normalized_silhouette_scores(decoder_columns, assoc.behavior_top_columns)
         curve[layer] = scores

@@ -14,6 +14,12 @@ Produces two geometry views:
     *visual* reflection from plain reflection/backtracking) once the
     binary view confirms reflection clusters at all.
 
+Which decoder columns get associated with which behavior is controlled
+by `geometry.method` -- "stats" (default, a per-column statistical test;
+see rise/feature_stats.py) or "argmax" (the paper's literal Sec. 4.3
+methodology). "stats" tends to find far more, cleaner columns per
+behavior when there are only a modest number of labeled steps.
+
 Usage:
     python scripts/05_annotate_and_visualize.py
 """
@@ -27,10 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rise.annotate import KeywordAnnotator, annotate_steps, save_annotations, to_binary_labels
 from rise.config import load_config
-from rise.geometry import (
-    associate_columns_with_behaviors, normalized_silhouette_scores, plot_decoder_geometry,
-    save_association, umap_projection,
-)
+from rise.feature_stats import build_association
+from rise.geometry import normalized_silhouette_scores, plot_decoder_geometry, save_association, umap_projection
 from rise.store import load_layer_activations, load_steps_metadata
 from rise.train_sae import load_sae
 
@@ -79,9 +83,7 @@ def main() -> None:
     # Fine-grained (4-way) association: this is the one downstream
     # scripts (07, 08) load to build the visual_reflection vector
     # specifically, so it's the one persisted to the stable filename.
-    assoc = associate_columns_with_behaviors(
-        sae, activations, annotations, input_scale=meta["input_scale"], top_k_per_step=geo_cfg["top_k_per_step"],
-    )
+    assoc = build_association(geo_cfg, sae, activations, annotations, input_scale=meta["input_scale"])
     plot_decoder_geometry(embedding, assoc, str(out_dir / f"geometry_layer{layer:02d}_finegrained.png"))
     silhouette = normalized_silhouette_scores(decoder_columns, assoc.behavior_top_columns)
     with (out_dir / f"silhouette_layer{layer:02d}.json").open("w") as f:
@@ -93,9 +95,7 @@ def main() -> None:
     # view -- collapses reflection/backtracking/visual_reflection into
     # one group before clustering, per label_groups above.
     binary_annotations = to_binary_labels(annotations)
-    assoc_binary = associate_columns_with_behaviors(
-        sae, activations, binary_annotations, input_scale=meta["input_scale"], top_k_per_step=geo_cfg["top_k_per_step"],
-    )
+    assoc_binary = build_association(geo_cfg, sae, activations, binary_annotations, input_scale=meta["input_scale"])
     plot_decoder_geometry(
         embedding, assoc_binary, str(out_dir / f"geometry_layer{layer:02d}.png"),
         labels_to_plot=["reflection", "others"],
