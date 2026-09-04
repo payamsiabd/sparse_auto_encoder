@@ -128,10 +128,30 @@ python scripts/02_generate_responses.py
 python scripts/03_extract_activations.py
 ```
 
-Stage 2 (script 03) re-feeds `(question, full_response)` through the
-model in a single forward pass (no sampling) and reads off
-`hidden_states[l]` at the token spanning each `"\n\n"` step delimiter,
-for every layer in `activations.layers` — exactly Sec. 3.2's
+Script 02 defaults to `generation.backend: "transformers"`
+(`model.generate()`, one prompt at a time — always available, works on
+CPU or GPU). On a GPU, switch to vLLM for much higher generation
+throughput:
+
+```bash
+pip install vllm   # check Qwen3-VL support for your installed version first
+python scripts/02_generate_responses.py --generation.backend vllm
+```
+
+vLLM only accelerates *this* step. It cannot replace script 03
+(extracting hidden states at an arbitrary layer/position), the steering
+in `scripts/07`/`08` (editing the residual stream mid-generation), or
+`rise.intervene.search_entropy_vector` (needs gradients) — none of
+those are things vLLM's inference-only engine exposes through its
+public API, so they always run on `transformers` regardless of this
+setting. Both backends write the same `responses.jsonl`, so script 03
+onward can't tell (or care) which one produced it — see
+`rise/vllm_backend.py`'s module docstring for the full reasoning.
+
+Script 03 re-feeds `(question, full_response)` through the model (via
+`transformers`, always) in a single forward pass (no sampling) and
+reads off `hidden_states[l]` at the token spanning each `"\n\n"` step
+delimiter, for every layer in `activations.layers` — exactly Sec. 3.2's
 construction, done for several layers at once so you don't have to
 re-run the (slow) VLM forward pass per layer.
 
@@ -284,6 +304,13 @@ had none of those available (see the environment note above).
 - `tests/test_evaluate_report.py` validates the precision/recall/F1/
   confusion-matrix computation in `scripts/08_evaluate_on_test.py`
   against known label sequences with a hand-computable answer.
+- `tests/test_vllm_backend.py` validates `rise/vllm_backend.py`'s
+  message-format conversion (this project's HF-style content items ->
+  vLLM/OpenAI-style `image_url` data URIs, round-tripped back to a real
+  image to confirm the encoding is correct), output parsing, and the
+  batched-call shape, against a fake `vllm` module injected into
+  `sys.modules` -- so it runs with no `vllm` install and no GPU, while
+  still exercising the real conversion/parsing code `scripts/02` calls.
 
 ```bash
 pip install torch numpy pillow pyyaml
@@ -298,3 +325,6 @@ you likely need a `transformers` build with Qwen3-VL support
 released version on PyPI doesn't have it yet). `huggingface_hub`
 (used by `scripts/00_download_models.py`) is a transitive dependency of
 `transformers`, so it's normally already present once that's installed.
+`vllm` is optional, only needed for `--generation.backend vllm` — check
+its release notes for Qwen3-VL support before relying on that path,
+since it's a very recent architecture.
