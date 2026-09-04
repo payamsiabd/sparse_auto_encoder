@@ -1,0 +1,21 @@
+# Core
+torch>=2.3
+# Qwen3-VL is a very recent architecture; pin to a transformers version
+# that has it, or install from source:
+#   pip install git+https://github.com/huggingface/transformers
+transformers>=4.57
+accelerate>=0.33
+pillow
+pyyaml
+numpy
+
+# Analysis / visualization (Sec. 4.3, Fig. 2-3)
+umap-learn>=0.5
+scikit-learn>=1.3
+matplotlib
+
+# nice-to-have
+tqdm
+
+# optional, only needed for --annotate.method llm (LLMJudgeAnnotator)
+# openai

@@ -1,0 +1,54 @@
+# Default configuration for the RISE-for-Qwen3-VL pipeline.
+# CLI scripts (scripts/*.py) read this file and let any field be
+# overridden with --key value on the command line.
+
+model:
+  model_id: "Qwen/Qwen3-VL-4B-Thinking"
+  dtype: "bf16"
+  device_map: "auto"
+  attn_implementation: "flash_attention_2"
+
+data:
+  prompts_jsonl: "data/prompts.jsonl"   # one {"id", "image"|"images", "question"} per line
+  image_root: null                       # defaults to the jsonl file's directory
+
+generation:
+  max_new_tokens: 4096
+  do_sample: false
+  temperature: 0.7
+  top_p: 0.8
+
+activations:
+  # SAE is trained on ONE layer at a time (Sec. 3.2); this list is which
+  # layers get extracted/cached in one pass over the data so you can
+  # sweep layers (e.g. to reproduce Fig. 3's per-layer silhouette curve)
+  # without regenerating responses each time.
+  layers: [8, 12, 16, 20, 24]
+  out_dir: "runs/activations"
+
+sae:
+  d_hidden: 2048        # D, dictionary size (paper default for a small model)
+  sparsity_coef: 0.002  # lambda
+  sparsity_penalty: "l1"
+  batch_size: 1024
+  lr: 0.0001
+  warmup_frac: 0.10
+  num_epochs: 50
+  normalize_inputs: true
+  seed: 0
+  train_layer: 16       # which cached layer to actually train the SAE on
+  out_dir: "runs/sae"
+
+annotate:
+  method: "keyword"      # "keyword" or "llm"
+  out_path: "runs/annotations.jsonl"
+
+geometry:
+  out_dir: "runs/geometry"
+  top_k_per_step: 1
+
+intervene:
+  layer: 16
+  alphas: [-1.5, -1.0, 0.0, 1.0, 1.5]
+  target_label: "visual_reflection"
+  top_k_columns: 20
