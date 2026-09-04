@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import sys
 import tempfile
 import types
@@ -53,8 +54,20 @@ def _install_fake_vllm():
 
     fake_module = types.ModuleType("vllm")
     fake_module.SamplingParams = FakeSamplingParams
+    fake_module.llm_constructor_calls = []  # type: ignore[attr-defined]
+
+    class FakeLLMEngineCtor:
+        """Fake for `vllm.LLM` itself (as opposed to `FakeLLM` above,
+        which fakes the *engine instance*'s `.chat()` -- distinct because
+        `load_vllm` calls the former, `generate_responses_batch` uses an
+        already-constructed engine)."""
+
+        def __init__(self, **kwargs):
+            fake_module.llm_constructor_calls.append(kwargs)  # type: ignore[attr-defined]
+
+    fake_module.LLM = FakeLLMEngineCtor
     sys.modules["vllm"] = fake_module
-    return FakeLLM
+    return FakeLLM, fake_module
 
 
 def _make_prompt(tmp_dir: Path, pid: str, color: tuple[int, int, int]) -> VisualPrompt:
@@ -108,7 +121,7 @@ def test_parse_vllm_output_splits_thinking_and_steps() -> None:
 
 
 def test_generate_responses_batch_calls_engine_with_expected_shape() -> None:
-    FakeLLM = _install_fake_vllm()
+    FakeLLM, _fake_module = _install_fake_vllm()
     from rise.vllm_backend import VLLMHandle, generate_responses_batch  # import after fake vllm installed
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -137,6 +150,30 @@ def test_generate_responses_batch_calls_engine_with_expected_shape() -> None:
         assert fake_llm.received_sampling_params.kwargs["temperature"] == 0.0
 
 
+def test_load_vllm_sets_spawn_method_and_forwards_seed() -> None:
+    """Regression test for the "Cannot re-initialize CUDA in forked
+    subprocess" crash: load_vllm must default VLLM_WORKER_MULTIPROC_METHOD
+    to "spawn" (so vLLM's engine-core subprocess never inherits a CUDA
+    context from this process) and must pass `seed` through to
+    `vllm.LLM(...)` rather than seeding CUDA itself."""
+    _FakeLLM, fake_module = _install_fake_vllm()
+    os.environ.pop("VLLM_WORKER_MULTIPROC_METHOD", None)
+
+    from rise.vllm_backend import load_vllm
+
+    try:
+        load_vllm("models/Qwen3-VL-4B-Thinking", seed=7)
+        method_during_call = os.environ.get("VLLM_WORKER_MULTIPROC_METHOD")
+    finally:
+        os.environ.pop("VLLM_WORKER_MULTIPROC_METHOD", None)
+
+    assert method_during_call == "spawn"
+    calls = fake_module.llm_constructor_calls
+    assert len(calls) == 1
+    assert calls[0]["seed"] == 7
+    assert calls[0]["model"] == "models/Qwen3-VL-4B-Thinking"
+
+
 if __name__ == "__main__":
     test_to_vllm_messages_converts_images_and_text()
     print("test_to_vllm_messages_converts_images_and_text: OK")
@@ -146,3 +183,5 @@ if __name__ == "__main__":
     print("test_parse_vllm_output_splits_thinking_and_steps: OK")
     test_generate_responses_batch_calls_engine_with_expected_shape()
     print("test_generate_responses_batch_calls_engine_with_expected_shape: OK")
+    test_load_vllm_sets_spawn_method_and_forwards_seed()
+    print("test_load_vllm_sets_spawn_method_and_forwards_seed: OK")
