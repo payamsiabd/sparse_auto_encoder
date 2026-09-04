@@ -31,10 +31,12 @@ plumbing is the main engineering addition here (see `rise/activations.py`).
 | 4.4 Eq. 6, causal intervention | `rise/intervene.py::project_intervene`, `SteeringHook`, `generate_with_intervention` |
 | Appendix D, LLM-judge + keyword annotation | `rise/annotate.py` (extended with a 4th class, `visual_reflection`) |
 | 5. Eq. 7, unsupervised entropy-vector discovery | `rise/intervene.py::search_entropy_vector` |
+| 4.2 training data (paper: 500 MATH examples) | `rise/mathvista.py` (this project: MathVista, a visual-reasoning benchmark) |
 
 ## Pipeline
 
 ```
+scripts/00_download_mathvista.py     # download MathVista -> prompts.jsonl + images
 scripts/01_generate_responses.py     # (image, question) -> CoT response, cached
 scripts/02_extract_activations.py    # response -> step-boundary activations per layer
 scripts/03_train_sae.py              # train the SAE on one layer's activations
@@ -52,22 +54,57 @@ python scripts/01_generate_responses.py \
   --generation.max_new_tokens 8192
 ```
 
-### 1. Prepare prompts
+**Environment note:** this pipeline was implemented and unit-tested
+(synthetic SAE recovery, mocked image-token-expansion arithmetic,
+mocked MathVista schema — see [Testing](#testing)) in a sandbox whose
+network policy blocks `huggingface.co` outright, so downloading
+MathVista, downloading Qwen3-VL-4B-Thinking's weights, and generating
+real model responses have **not** been run end-to-end against the real
+dataset/model. Everything below is ready to run as-is on a machine with
+normal Hugging Face access (and a GPU — see [Requirements](#requirements));
+if something in step 0/1 throws on a live pull (most likely a MathVista
+column-name mismatch — the schema was implemented from documentation,
+not a live pull), `rise/mathvista.py`'s module docstring says exactly
+where to look.
 
-Write one JSON object per line to `data/prompts.jsonl`:
+### 0. Download MathVista
 
-```json
-{"id": "chart_001", "image": "images/chart_001.png", "question": "What is the peak value shown, and in which year did it occur? Look carefully at the chart before answering."}
-{"id": "cmp_002", "images": ["images/a.png", "images/b.png"], "question": "Which of the two photos was taken first? Justify using visual evidence."}
+```bash
+pip install datasets
+python scripts/00_download_mathvista.py
 ```
 
-Prefer prompts that *invite* the model to check the image more than
-once (comparisons, small-detail counting, chart reading, "look again
-if unsure") — visual-reflection steps are much rarer than textual
-reflection in generic VQA and you'll want enough positive examples for
-the annotator/clustering stage to find them.
+Pulls `AI4Math/MathVista`'s `testmini` split (1,000 examples with public
+ground-truth answers; `test` (~5,100) has answers withheld for
+leaderboard submission) from Hugging Face, subsamples `mathvista.num_samples`
+(200 by default — raise it, or set to `null` for the whole split, once
+you've confirmed the pipeline works end-to-end), and writes
+`data/mathvista/prompts.jsonl` + `data/mathvista/images/<pid>.png` in
+the format `rise.dataset.load_prompts` expects. Every example gets a
+MathVista-tailored system prompt (`rise.mathvista.MATHVISTA_SYSTEM_PROMPT`)
+that explicitly asks the model to look back at the image before using
+any detail read off it — this is what makes `visual_reflection` steps
+actually show up often enough to find.
 
-### 2. Generate responses and extract activations
+MathVista is a good fit for this project's goal specifically: a large
+fraction of its problems (chart/figure/table reading, geometry) require
+pulling a precise value off the image, which gives a careful solver a
+real reason to re-check it mid-reasoning — unlike generic VQA, where
+one glance usually suffices. To concentrate on those problem types,
+filter to `rise.mathvista.VISUAL_HEAVY_TASKS`:
+
+```bash
+python scripts/00_download_mathvista.py \
+  --mathvista.task_filter "['chart question answering','figure question answering','table question answering','geometry problem solving']"
+```
+
+Want a different source dataset instead? Anything that can be written
+to the same `prompts.jsonl` shape works — see `rise/dataset.py::load_prompts`
+for the exact fields (`id`, `image`/`images`, `question`, optional
+`system_prompt`/`answer`); `rise/mathvista.py::export_rows` is a
+template for adapting another Hugging Face dataset the same way.
+
+### 1. Generate responses and extract activations
 
 ```bash
 python scripts/01_generate_responses.py
@@ -88,7 +125,7 @@ shift exactly (rather than assuming a fixed image-token count) so the
 returned positions are correct in the *actual* sequence the model
 consumes — see that module's docstring for the full argument.
 
-### 3. Train the SAE
+### 2. Train the SAE
 
 ```bash
 python scripts/03_train_sae.py --sae.train_layer 16
@@ -104,7 +141,7 @@ literal straight-through estimator instead). Decoder columns are kept
 exactly unit-norm throughout training (gradient-projection + renormalize
 each step), matching the invariant Sec. 4.4.1 relies on for interventions.
 
-### 4. Annotate steps and inspect the decoder geometry
+### 3. Annotate steps and inspect the decoder geometry
 
 ```bash
 python scripts/04_annotate_and_visualize.py
@@ -124,7 +161,7 @@ one SAE per cached layer) and pick the layer where `visual_reflection`
 is most separable from plain `reflection`/`backtracking` — the paper
 finds mid-to-late layers consistently win (Fig. 3).
 
-### 5. Steer generation with the discovered vector
+### 4. Steer generation with the discovered vector
 
 ```bash
 python scripts/06_intervene_demo.py --intervene.target_label visual_reflection
@@ -141,7 +178,7 @@ style of Fig. 5/6, specialized to visual grounding.
 ## Using this for your actual analysis goal
 
 Once you have a trained SAE and annotations for a layer with good
-`visual_reflection` separability (step 4/5 above):
+`visual_reflection` separability (step 3/4 above):
 
 1. **Classify any step post-hoc**: encode its activation with
    `sae.encode(h)` and check whether its top-firing latent(s) overlap
@@ -150,7 +187,7 @@ Once you have a trained SAE and annotations for a layer with good
    per-step visual-reflection score without needing a fresh LLM judge
    call for every trace you analyze later.
 2. **Validate against the LLM-judge labels**: swap `KeywordAnnotator`
-   for `LLMJudgeAnnotator` in step 4 and compare agreement
+   for `LLMJudgeAnnotator` in step 3 and compare agreement
    (`rise.annotate.agreement_ratio`) the way the paper validates its
    own annotator (Appendix D, Fig. 10) — high agreement is your
    evidence the discovered direction really is "visual reflection" and
@@ -164,7 +201,9 @@ Once you have a trained SAE and annotations for a layer with good
 
 ## Testing
 
-Neither test requires the actual Qwen3-VL weights or a GPU.
+None of these tests need the actual Qwen3-VL weights, MathVista itself,
+or a GPU — they were all run in the sandbox this was authored in, which
+had none of those available (see the environment note above).
 
 - `tests/test_sae.py` validates the SAE implementation on synthetic data
   generated exactly per the paper's Theorem 1 setup (an incoherent
@@ -177,11 +216,18 @@ Neither test requires the actual Qwen3-VL weights or a GPU.
   delimiter's token position *after* image-token expansion -- against a
   fake HF-processor-like tokenizer, so the position-shift arithmetic is
   checked without needing the real multimodal processor.
+- `tests/test_mathvista.py` validates `rise/mathvista.py`'s conversion
+  logic (image export, `prompts.jsonl` writing, `query`/`choices`
+  fallback, task filtering + subsampling) against an in-memory fake
+  dataset shaped like MathVista's documented schema, and checks the
+  output loads back correctly through `rise.dataset.load_prompts` --
+  everything except the actual network call to Hugging Face.
 
 ```bash
-pip install torch numpy
+pip install torch numpy pillow
 python tests/test_sae.py
 python tests/test_activations_locate.py
+python tests/test_mathvista.py
 ```
 
 ## Requirements

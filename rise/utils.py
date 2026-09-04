@@ -45,7 +45,7 @@ def load_qwen3_vl(
     model_id: str = DEFAULT_MODEL_ID,
     dtype: str = "bf16",
     device_map: str | dict = "auto",
-    attn_implementation: str | None = "flash_attention_2",
+    attn_implementation: str | None = "sdpa",
 ) -> ModelHandle:
     """Load Qwen3-VL-4B-Thinking (or any Qwen3-VL checkpoint) plus its
     processor, and auto-detect the language-model hidden size / layer

@@ -6,11 +6,23 @@ model:
   model_id: "Qwen/Qwen3-VL-4B-Thinking"
   dtype: "bf16"
   device_map: "auto"
-  attn_implementation: "flash_attention_2"
+  # "sdpa" works out of the box on both CPU and GPU with no extra install.
+  # Switch to "flash_attention_2" for a speedup on GPU once you've
+  # `pip install flash-attn` (it needs a matching CUDA toolchain).
+  attn_implementation: "sdpa"
+
+mathvista:
+  dataset_id: "AI4Math/MathVista"
+  split: "testmini"       # 1000 examples w/ public answers; "test" (~5100) has answers withheld
+  num_samples: 200        # subsample for a tractable first run; null = use the whole split
+  seed: 0
+  task_filter: null       # e.g. ["chart question answering", "geometry problem solving"];
+                           # see rise.mathvista.VISUAL_HEAVY_TASKS for a starting point
+  out_dir: "data/mathvista"
 
 data:
-  prompts_jsonl: "data/prompts.jsonl"   # one {"id", "image"|"images", "question"} per line
-  image_root: null                       # defaults to the jsonl file's directory
+  prompts_jsonl: "data/mathvista/prompts.jsonl"   # written by scripts/00_download_mathvista.py
+  image_root: null                                 # defaults to the jsonl file's directory
 
 generation:
   max_new_tokens: 4096
@@ -24,7 +36,7 @@ activations:
   # sweep layers (e.g. to reproduce Fig. 3's per-layer silhouette curve)
   # without regenerating responses each time.
   layers: [8, 12, 16, 20, 24]
-  out_dir: "runs/activations"
+  out_dir: "runs/mathvista/activations"
 
 sae:
   d_hidden: 2048        # D, dictionary size (paper default for a small model)
@@ -37,14 +49,14 @@ sae:
   normalize_inputs: true
   seed: 0
   train_layer: 16       # which cached layer to actually train the SAE on
-  out_dir: "runs/sae"
+  out_dir: "runs/mathvista/sae"
 
 annotate:
   method: "keyword"      # "keyword" or "llm"
-  out_path: "runs/annotations.jsonl"
+  out_path: "runs/mathvista/annotations.jsonl"
 
 geometry:
-  out_dir: "runs/geometry"
+  out_dir: "runs/mathvista/geometry"
   top_k_per_step: 1
 
 intervene:
