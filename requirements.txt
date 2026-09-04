@@ -8,7 +8,10 @@ accelerate>=0.33
 pillow
 pyyaml
 numpy
-datasets>=2.19   # for scripts/00_download_mathvista.py
+datasets>=2.19   # for scripts/01_download_mathvista.py
+
+# optional, only needed for --generation.backend vllm (scripts/02_generate_responses.py)
+# vllm>=0.9   # check Qwen3-VL support for your version before relying on this
 
 # Analysis / visualization (Sec. 4.3, Fig. 2-3)
 umap-learn>=0.5

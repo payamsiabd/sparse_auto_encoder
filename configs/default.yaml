@@ -42,10 +42,21 @@ data:
   image_root: null                                            # defaults to the jsonl file's directory
 
 generation:
+  # "transformers": model.generate(), one prompt at a time, always available.
+  # "vllm": batches every prompt into one engine call for much higher GPU
+  # throughput (scripts/02_generate_responses.py only -- see
+  # rise/vllm_backend.py for exactly what vLLM can/can't accelerate here).
+  # Requires `pip install vllm` with Qwen3-VL support.
+  backend: "transformers"
   max_new_tokens: 4096
   do_sample: false
   temperature: 0.7
   top_p: 0.8
+  # Only read when backend: "vllm".
+  vllm_max_model_len: 16384
+  vllm_gpu_memory_utilization: 0.90
+  vllm_tensor_parallel_size: 1
+  vllm_limit_mm_per_prompt: 4   # max images per prompt
 
 activations:
   # SAE is trained on ONE layer at a time (Sec. 3.2); this list is which
