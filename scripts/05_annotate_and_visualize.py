@@ -5,7 +5,7 @@ paper's decoder-geometry analysis (Fig. 2/3): UMAP projection of decoder
 columns highlighted by behavior, plus normalized silhouette scores.
 
 Usage:
-    python scripts/04_annotate_and_visualize.py --config configs/default.yaml
+    python scripts/05_annotate_and_visualize.py
 """
 from __future__ import annotations
 
@@ -17,7 +17,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rise.annotate import KeywordAnnotator, annotate_steps, save_annotations
 from rise.config import load_config
-from rise.geometry import associate_columns_with_behaviors, normalized_silhouette_scores, plot_decoder_geometry, umap_projection
+from rise.geometry import (
+    associate_columns_with_behaviors, normalized_silhouette_scores, plot_decoder_geometry,
+    save_association, umap_projection,
+)
 from rise.store import load_layer_activations, load_steps_metadata
 from rise.train_sae import load_sae
 
@@ -73,8 +76,13 @@ def main() -> None:
     with (out_dir / f"silhouette_layer{layer:02d}.json").open("w") as f:
         json.dump(silhouette, f, indent=2)
 
+    assoc_path = out_dir / f"association_layer{layer:02d}.json"
+    save_association(assoc, assoc_path)
+
     print(f"Silhouette scores (layer {layer}): {silhouette}")
     print(f"Wrote geometry plot + silhouette scores to {out_dir}")
+    print(f"Saved behavior-column association to {assoc_path} "
+          f"(reused by scripts/07_intervene_demo.py and scripts/08_evaluate_on_test.py)")
 
 
 if __name__ == "__main__":

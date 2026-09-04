@@ -1,9 +1,22 @@
 # Default configuration for the RISE-for-Qwen3-VL pipeline.
 # CLI scripts (scripts/*.py) read this file and let any field be
-# overridden with --key value on the command line.
+# overridden with --key value on the command line -- but every default
+# below is already a project-local path, so after running
+# scripts/00_download_models.py and scripts/01_download_mathvista.py
+# once, every later script (02-08) runs with NO arguments at all.
+
+models_root: "models"   # scripts/00_download_models.py downloads each entry below under here
+
+models:
+  # `repo_id` may be a registry key from rise.models.MODEL_REGISTRY (as
+  # here) or any Hugging Face hub id directly. `name` is the local
+  # directory name under `models_root`; model.model_id below points at
+  # the first entry's resulting path by construction (models_root/name).
+  - name: "Qwen3-VL-4B-Thinking"
+    repo_id: "qwen3-vl-4b-thinking"
 
 model:
-  model_id: "Qwen/Qwen3-VL-4B-Thinking"
+  model_id: "models/Qwen3-VL-4B-Thinking"   # = models_root/models[0].name; run scripts/00_download_models.py first
   dtype: "bf16"
   device_map: "auto"
   # "sdpa" works out of the box on both CPU and GPU with no extra install.
@@ -14,15 +27,19 @@ model:
 mathvista:
   dataset_id: "AI4Math/MathVista"
   split: "testmini"       # 1000 examples w/ public answers; "test" (~5100) has answers withheld
-  num_samples: 200        # subsample for a tractable first run; null = use the whole split
+  num_samples: 200        # subsample (before splitting) for a tractable first run; null = use the whole split
+  train_frac: 0.8         # fraction of the (filtered/subsampled) selection used to fit the SAE;
+                           # the rest is held out for scripts/08_evaluate_on_test.py
   seed: 0
   task_filter: null       # e.g. ["chart question answering", "geometry problem solving"];
                            # see rise.mathvista.VISUAL_HEAVY_TASKS for a starting point
   out_dir: "data/mathvista"
 
 data:
-  prompts_jsonl: "data/mathvista/prompts.jsonl"   # written by scripts/00_download_mathvista.py
-  image_root: null                                 # defaults to the jsonl file's directory
+  # Both written by scripts/01_download_mathvista.py.
+  prompts_jsonl: "data/mathvista/train/prompts.jsonl"        # used by scripts/02-07 (fit the SAE + behavior vectors)
+  test_prompts_jsonl: "data/mathvista/test/prompts.jsonl"    # used by scripts/08 (held-out evaluation)
+  image_root: null                                            # defaults to the jsonl file's directory
 
 generation:
   max_new_tokens: 4096
@@ -64,3 +81,9 @@ intervene:
   alphas: [-1.5, -1.0, 0.0, 1.0, 1.5]
   target_label: "visual_reflection"
   top_k_columns: 20
+
+evaluate:
+  # scripts/08_evaluate_on_test.py: held-out MathVista test-split results.
+  out_dir: "runs/mathvista/evaluate"
+  num_samples: null          # test prompts to run for classification agreement; null = all
+  num_intervene_samples: 10  # test prompts to run the causal-intervention effect on (3 generations each)

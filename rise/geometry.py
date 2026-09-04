@@ -13,6 +13,8 @@ decoder columns "associated with" that behavior.
 from __future__ import annotations
 
 import dataclasses
+import json
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -53,6 +55,58 @@ def associate_columns_with_behaviors(
         for label, c in counts.items()
     }
     return ColumnAssociation(behavior_top_columns=top_columns, behavior_column_counts=counts)
+
+
+def save_association(assoc: ColumnAssociation, path: str | Path) -> None:
+    """Persist a `ColumnAssociation` computed on the *train* split so
+    later stages (steering, held-out evaluation) can build behavior
+    vectors from the exact same train-derived columns without needing
+    the train activations/annotations on hand again."""
+    payload = {
+        "behavior_top_columns": assoc.behavior_top_columns,
+        "behavior_column_counts": {k: v.tolist() for k, v in assoc.behavior_column_counts.items()},
+    }
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+def load_association(path: str | Path) -> ColumnAssociation:
+    with open(path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    return ColumnAssociation(
+        behavior_top_columns=payload["behavior_top_columns"],
+        behavior_column_counts={k: np.array(v) for k, v in payload["behavior_column_counts"].items()},
+    )
+
+
+def predict_label(code: torch.Tensor, assoc: ColumnAssociation, top_k: int = 1) -> Label:
+    """Predict a step's behavior label from its SAE code alone, using
+    only column membership derived from the *train* split (via
+    `associate_columns_with_behaviors` / `save_association`) -- no
+    activations or annotations from the step itself beyond its own code.
+    This is the "classify any step post-hoc" mechanism used to evaluate
+    whether the discovered `visual_reflection` columns generalize to
+    held-out data (`scripts/08_evaluate_on_test.py`).
+
+    A step's top-`top_k` active latents each vote for every behavior
+    whose train-derived top-column set contains them; the label with
+    the most votes wins, ties broken by whichever label's association
+    dict was populated first (stable `dict` iteration order). No active
+    latent falls in any behavior's set -> "others"."""
+    top_idx = torch.topk(code, k=min(top_k, code.shape[-1])).indices.tolist()
+    active = [i for i in top_idx if code[i] > 0]
+    if not active:
+        return "others"
+
+    scores = {
+        label: sum(1 for i in active if i in set(cols))
+        for label, cols in assoc.behavior_top_columns.items()
+    }
+    best_label = max(scores, key=scores.get, default="others")
+    if not scores or scores[best_label] == 0:
+        return "others"
+    return best_label
 
 
 def umap_projection(decoder_columns: np.ndarray, n_neighbors: int = 15, min_dist: float = 0.1, seed: int = 0) -> np.ndarray:

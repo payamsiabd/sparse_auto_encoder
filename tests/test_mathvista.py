@@ -18,7 +18,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rise.dataset import load_prompts
-from rise.mathvista import build_query, export_rows
+from rise.mathvista import build_query, export_rows, export_train_test_split
 
 
 def _fake_row(pid: str, task: str, question_type: str, with_query: bool, with_choices: bool) -> dict:
@@ -115,6 +115,49 @@ def test_export_rows_task_filter_and_subsample() -> None:
         assert stats.num_written == 3
 
 
+def test_export_train_test_split_is_disjoint_and_self_contained() -> None:
+    import tempfile
+
+    rows = [
+        _fake_row(str(i), "chart question answering", "free_form", with_query=True, with_choices=False)
+        for i in range(20)
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        split = export_train_test_split(rows, out_dir, train_frac=0.75, seed=0)
+
+        assert split.train.num_written == 15
+        assert split.test.num_written == 5
+
+        train_prompts = load_prompts(out_dir / "train" / "prompts.jsonl")
+        test_prompts = load_prompts(out_dir / "test" / "prompts.jsonl")
+        assert len(train_prompts) == 15
+        assert len(test_prompts) == 5
+
+        # Disjoint ids, and every image path actually resolves (each
+        # split has its own self-contained images/ directory).
+        train_ids = {p.id for p in train_prompts}
+        test_ids = {p.id for p in test_prompts}
+        assert train_ids.isdisjoint(test_ids)
+        assert train_ids | test_ids == {str(i) for i in range(20)}
+        assert all(p.images[0].exists() for p in train_prompts)
+        assert all(p.images[0].exists() for p in test_prompts)
+
+
+def test_export_train_test_split_rejects_degenerate_fractions() -> None:
+    import tempfile
+
+    rows = [_fake_row(str(i), "chart question answering", "free_form", True, False) for i in range(3)]
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            export_train_test_split(rows, Path(tmp), train_frac=0.99)
+            raised = False
+        except ValueError:
+            raised = True
+        assert raised, "expected a ValueError when a split would be empty"
+
+
 if __name__ == "__main__":
     test_build_query_prefers_query_field()
     print("test_build_query_prefers_query_field: OK")
@@ -126,3 +169,7 @@ if __name__ == "__main__":
     print("test_export_rows_writes_prompts_and_images: OK")
     test_export_rows_task_filter_and_subsample()
     print("test_export_rows_task_filter_and_subsample: OK")
+    test_export_train_test_split_is_disjoint_and_self_contained()
+    print("test_export_train_test_split_is_disjoint_and_self_contained: OK")
+    test_export_train_test_split_rejects_degenerate_fractions()
+    print("test_export_train_test_split_rejects_degenerate_fractions: OK")

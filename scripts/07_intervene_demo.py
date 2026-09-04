@@ -1,13 +1,16 @@
 #!/usr/bin/env python
 """Reproduce Sec. 4.4 / Fig. 4-6's causal-intervention demo, targeting
 the `visual_reflection` behavior vector: build the vector from a trained
-SAE + annotations, then generate a response to a held-out visual prompt
+SAE + annotations, then generate a response to one training-split prompt
 under negative / vanilla / positive intervention and report how the
 count of visual-reflection steps shifts (the same style of evidence as
-Fig. 5/6, and the accuracy/step-count table in Sec. 4.4.1).
+Fig. 5/6, and the accuracy/step-count table in Sec. 4.4.1). This is a
+quick single-example sanity check; for the real held-out result
+(several test-split prompts, aggregated), see
+`scripts/08_evaluate_on_test.py`.
 
 Usage:
-    python scripts/06_intervene_demo.py --config configs/default.yaml \\
+    python scripts/07_intervene_demo.py \\
         --intervene.target_label visual_reflection
 """
 from __future__ import annotations

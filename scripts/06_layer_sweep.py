@@ -5,7 +5,7 @@ pairwise) across layers, to pick the layer with the most disentangled
 behavior geometry for the intervention stage (script 06).
 
 Usage:
-    python scripts/05_layer_sweep.py --config configs/default.yaml
+    python scripts/06_layer_sweep.py
 """
 from __future__ import annotations
 

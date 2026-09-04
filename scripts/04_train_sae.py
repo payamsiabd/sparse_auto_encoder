@@ -2,7 +2,7 @@
 """Train the SAE (Sec. 3.1, 4.2) on the cached activations for one layer.
 
 Usage:
-    python scripts/03_train_sae.py --config configs/default.yaml \\
+    python scripts/04_train_sae.py \\
         --sae.train_layer 16 --sae.d_hidden 2048
 """
 from __future__ import annotations

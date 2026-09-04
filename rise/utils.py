@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -52,11 +53,28 @@ def load_qwen3_vl(
     count from the (nested, vision+text) model config so the rest of the
     pipeline never hardcodes architecture-specific numbers.
 
+    `model_id` is normally a local directory produced by
+    `scripts/00_download_models.py` (`configs/default.yaml`'s
+    `model.model_id` default), not a hub id -- this keeps every later
+    stage offline and reproducible. A hub id works too (transformers
+    downloads it to the shared cache on first use, same as always).
+
     Requires a `transformers` build with Qwen3-VL support
     (``pip install -U transformers`` or build from source -- Qwen3-VL is
     a very recent architecture at the time of writing).
     """
     from transformers import AutoProcessor
+
+    from .models import model_is_downloaded
+
+    local_path = Path(model_id)
+    if local_path.exists() and not model_is_downloaded(local_path):
+        raise FileNotFoundError(
+            f"'{model_id}' exists but doesn't look like a complete model "
+            f"snapshot (no config.json + *.safetensors). Run "
+            f"`python scripts/00_download_models.py` first, or point "
+            f"model.model_id at a Hugging Face hub id instead."
+        )
 
     try:
         from transformers import Qwen3VLForConditionalGeneration as ModelCls

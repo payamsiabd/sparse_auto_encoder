@@ -27,7 +27,7 @@ plumbing is the main engineering addition here (see `rise/activations.py`).
 | 3.2 Thought Representation Construction | `rise/activations.py`, `rise/utils.py::split_into_steps` |
 | 4.2 Setup (D=2048, batch 1024, lr 1e-4, λ=2e-3, Adam+cosine) | `rise/train_sae.py::TrainConfig` defaults, `configs/default.yaml` |
 | 4.3 Decoder geometry, UMAP, Fig. 2 | `rise/geometry.py::umap_projection`, `plot_decoder_geometry` |
-| 4.3 Silhouette scores, Fig. 3 | `rise/geometry.py::normalized_silhouette_scores`, `scripts/05_layer_sweep.py` |
+| 4.3 Silhouette scores, Fig. 3 | `rise/geometry.py::normalized_silhouette_scores`, `scripts/06_layer_sweep.py` |
 | 4.4 Eq. 6, causal intervention | `rise/intervene.py::project_intervene`, `SteeringHook`, `generate_with_intervention` |
 | Appendix D, LLM-judge + keyword annotation | `rise/annotate.py` (extended with a 4th class, `visual_reflection`) |
 | 5. Eq. 7, unsupervised entropy-vector discovery | `rise/intervene.py::search_entropy_vector` |
@@ -36,55 +36,72 @@ plumbing is the main engineering addition here (see `rise/activations.py`).
 ## Pipeline
 
 ```
-scripts/00_download_mathvista.py     # download MathVista -> prompts.jsonl + images
-scripts/01_generate_responses.py     # (image, question) -> CoT response, cached
-scripts/02_extract_activations.py    # response -> step-boundary activations per layer
-scripts/03_train_sae.py              # train the SAE on one layer's activations
-scripts/04_annotate_and_visualize.py # label steps, reproduce Fig. 2/3
-scripts/05_layer_sweep.py            # train+evaluate across layers, reproduce Fig. 3's curve
-scripts/06_intervene_demo.py         # build a behavior vector, steer generation, measure the effect
+scripts/00_download_models.py        # download Qwen3-VL-4B-Thinking -> models/
+scripts/01_download_mathvista.py     # download MathVista -> train/ + test/ prompts.jsonl + images
+scripts/02_generate_responses.py     # (image, question) -> CoT response, cached          [train split]
+scripts/03_extract_activations.py    # response -> step-boundary activations per layer     [train split]
+scripts/04_train_sae.py              # train the SAE on one layer's activations
+scripts/05_annotate_and_visualize.py # label steps, reproduce Fig. 2/3, save behavior vectors
+scripts/06_layer_sweep.py            # (optional) train+evaluate across layers, Fig. 3's curve
+scripts/07_intervene_demo.py         # quick single-example steering sanity check
+scripts/08_evaluate_on_test.py       # the actual result: classification + steering on the held-out test split
 ```
 
-Every script reads `configs/default.yaml` and accepts dotted-key
-overrides, e.g.:
+**Nothing here takes a required argument.** Every script reads
+`configs/default.yaml`, whose defaults are all project-local paths
+(`models/`, `data/mathvista/`, `runs/mathvista/`) that the download
+scripts (00, 01) and each pipeline stage populate for the next one —
+run them in order with no flags and it works. Every value is still
+overridable with a dotted key if you want to, e.g.:
 
 ```bash
-python scripts/01_generate_responses.py \
-  --data.prompts_jsonl data/my_prompts.jsonl \
-  --generation.max_new_tokens 8192
+python scripts/02_generate_responses.py --generation.max_new_tokens 8192
 ```
 
 **Environment note:** this pipeline was implemented and unit-tested
-(synthetic SAE recovery, mocked image-token-expansion arithmetic,
-mocked MathVista schema — see [Testing](#testing)) in a sandbox whose
-network policy blocks `huggingface.co` outright, so downloading
-MathVista, downloading Qwen3-VL-4B-Thinking's weights, and generating
-real model responses have **not** been run end-to-end against the real
-dataset/model. Everything below is ready to run as-is on a machine with
-normal Hugging Face access (and a GPU — see [Requirements](#requirements));
-if something in step 0/1 throws on a live pull (most likely a MathVista
-column-name mismatch — the schema was implemented from documentation,
-not a live pull), `rise/mathvista.py`'s module docstring says exactly
-where to look.
+(synthetic SAE recovery, mocked image-token-expansion arithmetic, mocked
+MathVista schema, mocked model-registry/association logic — see
+[Testing](#testing)) in a sandbox whose network policy blocks
+`huggingface.co` outright, so downloading the model, downloading
+MathVista, and generating real model responses have **not** been run
+end-to-end against the real dataset/model. Everything below is ready to
+run as-is on a machine with normal Hugging Face access (and a GPU — see
+[Requirements](#requirements)); if something in step 0/1 throws on a
+live pull (most likely a MathVista column-name mismatch — the schema
+was implemented from documentation, not a live pull), `rise/mathvista.py`'s
+module docstring says exactly where to look.
 
-### 0. Download MathVista
+### 0. Install and download everything
 
 ```bash
-pip install datasets
-python scripts/00_download_mathvista.py
+pip install -r requirements.txt
+python scripts/00_download_models.py     # ~8-9GB, Qwen3-VL-4B-Thinking -> models/Qwen3-VL-4B-Thinking/
+python scripts/01_download_mathvista.py  # -> data/mathvista/{train,test}/{prompts.jsonl,images/}
 ```
 
-Pulls `AI4Math/MathVista`'s `testmini` split (1,000 examples with public
-ground-truth answers; `test` (~5,100) has answers withheld for
-leaderboard submission) from Hugging Face, subsamples `mathvista.num_samples`
-(200 by default — raise it, or set to `null` for the whole split, once
-you've confirmed the pipeline works end-to-end), and writes
-`data/mathvista/prompts.jsonl` + `data/mathvista/images/<pid>.png` in
-the format `rise.dataset.load_prompts` expects. Every example gets a
-MathVista-tailored system prompt (`rise.mathvista.MATHVISTA_SYSTEM_PROMPT`)
-that explicitly asks the model to look back at the image before using
-any detail read off it — this is what makes `visual_reflection` steps
-actually show up often enough to find.
+`00_download_models.py` snapshots every entry in `configs/default.yaml`'s
+`models:` list (just Qwen3-VL-4B-Thinking by default) into a
+project-local `models/` directory via `huggingface_hub.snapshot_download`
+— safe to re-run if interrupted, only missing/changed files are
+re-fetched. `model.model_id` already points at the resulting path, so
+every later script loads it fully offline; `rise/models.py` is a small
+registry (`rise.models.MODEL_REGISTRY`), so adding a second local model
+later is a one-line addition, not a new code path.
+
+`01_download_mathvista.py` pulls `AI4Math/MathVista`'s `testmini` split
+(1,000 examples with public ground-truth answers; `test` (~5,100) has
+answers withheld for leaderboard submission) from Hugging Face,
+subsamples `mathvista.num_samples` (200 by default — raise it, or set
+to `null` for the whole split, once you've confirmed the pipeline works
+end-to-end), and splits the selection `mathvista.train_frac` (0.8) /
+`1 - train_frac` into **train** (fit the SAE + behavior vectors on this)
+and **test** (`scripts/08` measures results on this, and only this —
+data neither the SAE nor the behavior vectors have seen). Every example
+gets a MathVista-tailored system prompt
+(`rise.mathvista.MATHVISTA_SYSTEM_PROMPT`) that explicitly asks the
+model to look back at the image before using any detail read off it —
+this is what makes `visual_reflection` steps actually show up often
+enough to find.
 
 MathVista is a good fit for this project's goal specifically: a large
 fraction of its problems (chart/figure/table reading, geometry) require
@@ -94,7 +111,7 @@ one glance usually suffices. To concentrate on those problem types,
 filter to `rise.mathvista.VISUAL_HEAVY_TASKS`:
 
 ```bash
-python scripts/00_download_mathvista.py \
+python scripts/01_download_mathvista.py \
   --mathvista.task_filter "['chart question answering','figure question answering','table question answering','geometry problem solving']"
 ```
 
@@ -104,19 +121,19 @@ for the exact fields (`id`, `image`/`images`, `question`, optional
 `system_prompt`/`answer`); `rise/mathvista.py::export_rows` is a
 template for adapting another Hugging Face dataset the same way.
 
-### 1. Generate responses and extract activations
+### 1. Generate responses and extract activations (train split)
 
 ```bash
-python scripts/01_generate_responses.py
-python scripts/02_extract_activations.py
+python scripts/02_generate_responses.py
+python scripts/03_extract_activations.py
 ```
 
-Stage 2 re-feeds `(question, full_response)` through the model in a
-single forward pass (no sampling) and reads off `hidden_states[l]` at
-the token spanning each `"\n\n"` step delimiter, for every layer in
-`activations.layers` — exactly Sec. 3.2's construction, done for
-several layers at once so you don't have to re-run the (slow) VLM
-forward pass per layer.
+Stage 2 (script 03) re-feeds `(question, full_response)` through the
+model in a single forward pass (no sampling) and reads off
+`hidden_states[l]` at the token spanning each `"\n\n"` step delimiter,
+for every layer in `activations.layers` — exactly Sec. 3.2's
+construction, done for several layers at once so you don't have to
+re-run the (slow) VLM forward pass per layer.
 
 Qwen3-VL-specific detail: the processor expands each image placeholder
 into many vision tokens, shifting every downstream text token's
@@ -128,70 +145,102 @@ consumes — see that module's docstring for the full argument.
 ### 2. Train the SAE
 
 ```bash
-python scripts/03_train_sae.py --sae.train_layer 16
+python scripts/04_train_sae.py
 ```
 
 Matches Sec. 4.2's hyperparameters by default (`D=2048`, batch 1024,
-Adam lr=1e-4 with 10% warmup + cosine decay, λ=2e-3). `||z||_0` in the
-paper's loss (Eq. 2) is non-differentiable; as is standard for this SAE
-family (the paper itself cites Cunningham et al., 2023 for the "standard
-SAE" recipe it uses), we optimize the L1 relaxation and log the true L0
-as a diagnostic (`sae.sparsity_penalty: l1` in the config; `l0` selects a
-literal straight-through estimator instead). Decoder columns are kept
-exactly unit-norm throughout training (gradient-projection + renormalize
-each step), matching the invariant Sec. 4.4.1 relies on for interventions.
+Adam lr=1e-4 with 10% warmup + cosine decay, λ=2e-3, on `sae.train_layer`
+= layer 16). `||z||_0` in the paper's loss (Eq. 2) is non-differentiable;
+as is standard for this SAE family (the paper itself cites Cunningham
+et al., 2023 for the "standard SAE" recipe it uses), we optimize the L1
+relaxation and log the true L0 as a diagnostic (`sae.sparsity_penalty:
+l1` in the config; `l0` selects a literal straight-through estimator
+instead). Decoder columns are kept exactly unit-norm throughout training
+(gradient-projection + renormalize each step), matching the invariant
+Sec. 4.4.1 relies on for interventions.
 
 ### 3. Annotate steps and inspect the decoder geometry
 
 ```bash
-python scripts/04_annotate_and_visualize.py
+python scripts/05_annotate_and_visualize.py
 ```
 
-Labels every cached step `reflection` / `backtracking` /
+Labels every cached (train-split) step `reflection` / `backtracking` /
 `visual_reflection` / `others` (offline keyword annotator by default —
 see `rise/annotate.py::KeywordAnnotator`; swap in an LLM judge with
 `LLMJudgeAnnotator(call_fn)` for higher-quality labels, mirroring the
 paper's GPT-5/GPT-4o/Claude judges and their reported >85% agreement
 with keyword matching), then reproduces Fig. 2 (UMAP of decoder columns,
 highlighted per behavior) and Fig. 3 (normalized silhouette scores) for
-the layer the SAE was trained on.
+the layer the SAE was trained on. Also writes
+`runs/mathvista/geometry/association_layer16.json` — which decoder
+columns belong to which behavior, per `rise.geometry.ColumnAssociation`
+— the artifact steps 4 and 5 below build behavior vectors from, so
+nothing downstream needs to recompute it from the train activations.
 
-Run `scripts/05_layer_sweep.py` to get the full per-layer curve (trains
+Run `scripts/06_layer_sweep.py` to get the full per-layer curve (trains
 one SAE per cached layer) and pick the layer where `visual_reflection`
 is most separable from plain `reflection`/`backtracking` — the paper
-finds mid-to-late layers consistently win (Fig. 3).
+finds mid-to-late layers consistently win (Fig. 3). If you change
+`sae.train_layer` as a result, re-run steps 2-3 for that layer.
 
-### 4. Steer generation with the discovered vector
+### 4. Sanity-check steering on one example
 
 ```bash
-python scripts/06_intervene_demo.py --intervene.target_label visual_reflection
+python scripts/07_intervene_demo.py
 ```
 
 Builds a `visual_reflection` vector by averaging the decoder columns
 most specifically associated with that label (filtering out columns
 that also fire strongly for `reflection`/`backtracking`, per Sec.
-4.4.1), then generates the same prompt under negative / vanilla /
-positive intervention (`h' = h - α·w(wᵀh)`, Eq. 6) and reports how the
-count of visual-reflection steps shifts — the causal-effect evidence
-style of Fig. 5/6, specialized to visual grounding.
+4.4.1), then generates one training-split prompt under negative /
+vanilla / positive intervention (`h' = h - α·w(wᵀh)`, Eq. 6) and reports
+how the count of visual-reflection steps shifts — a quick, single-example
+version of the causal-effect evidence in Fig. 5/6. This is a fast sanity
+check, not the result — that's step 5.
 
-## Using this for your actual analysis goal
+### 5. Get results: evaluate on the held-out MathVista test split
 
-Once you have a trained SAE and annotations for a layer with good
-`visual_reflection` separability (step 3/4 above):
+```bash
+python scripts/08_evaluate_on_test.py
+```
 
-1. **Classify any step post-hoc**: encode its activation with
-   `sae.encode(h)` and check whether its top-firing latent(s) overlap
-   with the `visual_reflection` column set from
-   `associate_columns_with_behaviors` — this gives you an unsupervised,
-   per-step visual-reflection score without needing a fresh LLM judge
-   call for every trace you analyze later.
-2. **Validate against the LLM-judge labels**: swap `KeywordAnnotator`
-   for `LLMJudgeAnnotator` in step 3 and compare agreement
-   (`rise.annotate.agreement_ratio`) the way the paper validates its
-   own annotator (Appendix D, Fig. 10) — high agreement is your
-   evidence the discovered direction really is "visual reflection" and
-   not a confound (e.g. response length, or generic uncertainty).
+This is the actual "does it work" measurement, run on data the SAE and
+the behavior vectors never saw:
+
+1. **Classification agreement.** For every held-out reasoning step,
+   predicts its behavior label from its SAE code alone
+   (`rise.geometry.predict_label`, using only the train-derived
+   column→behavior association from step 3) and compares against the
+   keyword annotator applied directly to that step's text. Writes a
+   precision/recall/F1 report per label (`classification_report.json`)
+   and every individual prediction (`step_predictions.jsonl`) to
+   `runs/mathvista/evaluate/`. High agreement, especially on
+   `visual_reflection`, is evidence the SAE learned a real, reusable
+   direction rather than overfitting train-specific activations.
+2. **Causal intervention effect.** Builds the same target behavior
+   vector and steers generation on `evaluate.num_intervene_samples`
+   (10 by default) held-out prompts, reporting the mean step count and
+   mean target-behavior step count under negative/vanilla/positive
+   intervention (`intervention_effect.json`) — the Fig. 5 style of
+   evidence (effect averaged across several examples), computed on
+   unseen data instead of the one example step 4 used.
+
+## Using this for further analysis
+
+1. **Classify any new step post-hoc**: encode its activation with
+   `sae.encode(h)` and pass the code to `rise.geometry.predict_label`
+   with the saved `association_layer*.json` — this gives you an
+   unsupervised, per-step visual-reflection score for any trace you
+   analyze later, without a fresh LLM judge call. This is exactly what
+   `scripts/08_evaluate_on_test.py` does; reuse it directly.
+2. **Validate against LLM-judge labels**: swap `KeywordAnnotator` for
+   `LLMJudgeAnnotator` in step 3 (and in `scripts/08`) and compare
+   agreement (`rise.annotate.agreement_ratio`) the way the paper
+   validates its own annotator (Appendix D, Fig. 10) — high agreement is
+   further evidence the discovered direction really is "visual
+   reflection" and not a confound (e.g. response length, or generic
+   uncertainty).
 3. **Discover unsupervised sub-behaviors**: run
    `rise.intervene.search_entropy_vector` (Eq. 7) restricted to steps
    already labeled `visual_reflection` as an alternative discovery
@@ -218,16 +267,27 @@ had none of those available (see the environment note above).
   checked without needing the real multimodal processor.
 - `tests/test_mathvista.py` validates `rise/mathvista.py`'s conversion
   logic (image export, `prompts.jsonl` writing, `query`/`choices`
-  fallback, task filtering + subsampling) against an in-memory fake
-  dataset shaped like MathVista's documented schema, and checks the
-  output loads back correctly through `rise.dataset.load_prompts` --
-  everything except the actual network call to Hugging Face.
+  fallback, task filtering + subsampling, and the train/test split --
+  disjoint ids, each half self-contained, degenerate splits rejected)
+  against an in-memory fake dataset shaped like MathVista's documented
+  schema, and checks the output loads back correctly through
+  `rise.dataset.load_prompts` -- everything except the actual network
+  call to Hugging Face.
+- `tests/test_models.py` validates `rise/models.py`'s registry
+  resolution and the local-snapshot readiness check
+  `rise.utils.load_qwen3_vl` uses to fail clearly instead of silently
+  falling back to a hub download -- no network call.
+- `tests/test_geometry.py` validates `rise.geometry.predict_label` (the
+  post-hoc, activation-only behavior classifier `scripts/08` scores
+  against annotations) and `save_association`/`load_association`'s
+  round-trip, against a synthetic `ColumnAssociation`.
+- `tests/test_evaluate_report.py` validates the precision/recall/F1/
+  confusion-matrix computation in `scripts/08_evaluate_on_test.py`
+  against known label sequences with a hand-computable answer.
 
 ```bash
-pip install torch numpy pillow
-python tests/test_sae.py
-python tests/test_activations_locate.py
-python tests/test_mathvista.py
+pip install torch numpy pillow pyyaml
+for f in tests/test_*.py; do python "$f"; done
 ```
 
 ## Requirements
@@ -235,4 +295,6 @@ python tests/test_mathvista.py
 See `requirements.txt`. Qwen3-VL is a very recent model architecture;
 you likely need a `transformers` build with Qwen3-VL support
 (`pip install git+https://github.com/huggingface/transformers` if the
-released version on PyPI doesn't have it yet).
+released version on PyPI doesn't have it yet). `huggingface_hub`
+(used by `scripts/00_download_models.py`) is a transitive dependency of
+`transformers`, so it's normally already present once that's installed.

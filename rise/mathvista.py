@@ -72,6 +72,12 @@ class MathVistaExportStats:
     question_type_counts: dict[str, int]
 
 
+@dataclasses.dataclass
+class MathVistaSplitStats:
+    train: MathVistaExportStats
+    test: MathVistaExportStats
+
+
 def build_query(row: dict) -> str:
     """MathVista's `query` column (when present) is already the fully
     formatted prompt -- question + choices + answer-format instructions
@@ -116,25 +122,86 @@ def download_mathvista(
     out_dir: str | Path,
     split: str = "testmini",
     num_samples: Optional[int] = 200,
+    train_frac: float = 0.8,
     seed: int = 0,
     task_filter: Optional[list[str]] = None,
     dataset_id: str = DEFAULT_DATASET_ID,
-) -> MathVistaExportStats:
-    """Fetch MathVista from Hugging Face and write `<out_dir>/prompts.jsonl`
-    plus `<out_dir>/images/<pid>.png`, ready for `rise.dataset.load_prompts`.
+) -> MathVistaSplitStats:
+    """Fetch MathVista from Hugging Face and write it as a train/test
+    split ready for `rise.dataset.load_prompts`:
+    `<out_dir>/train/{prompts.jsonl,images/}` (SAE training -- generate
+    responses, extract activations, fit the SAE, associate decoder
+    columns with behaviors) and `<out_dir>/test/{prompts.jsonl,images/}`
+    (held out for `scripts/08_evaluate_on_test.py` -- everything that
+    should be measured on unseen examples, not the data the SAE/behavior
+    vectors were derived from).
 
     Requires network access to huggingface.co and the `datasets` package
     (`pip install datasets`). MathVista is publicly downloadable, no auth
     token needed as of this writing. `split="testmini"` (1,000 examples
     with public ground-truth answers) is the right default for research
     use; `split="test"` (~5,100 examples) has answers withheld for
-    leaderboard submission, so `answer` will be null there.
+    leaderboard submission, so `answer` will be null there -- fine for
+    this pipeline (labels come from the annotator, not MathVista's
+    ground truth) but you lose the ability to sanity-check accuracy.
     """
     from datasets import load_dataset
 
     ds = load_dataset(dataset_id, split=split)
     print(f"Loaded {dataset_id}[{split}]: {len(ds)} rows, columns={ds.column_names}")
-    return export_rows(ds, out_dir, num_samples=num_samples, seed=seed, task_filter=task_filter)
+    return export_train_test_split(
+        ds, out_dir, train_frac=train_frac, num_samples=num_samples, seed=seed, task_filter=task_filter,
+    )
+
+
+def _select_rows(
+    rows: Iterable[dict], num_samples: Optional[int], seed: int, task_filter: Optional[list[str]],
+) -> list[dict]:
+    rows = list(rows)
+    if task_filter:
+        rows = [r for r in rows if (r.get("metadata") or {}).get("task") in task_filter]
+    if num_samples is not None and num_samples < len(rows):
+        random.Random(seed).shuffle(rows)
+        rows = rows[:num_samples]
+    return rows
+
+
+def export_train_test_split(
+    rows: Iterable[dict],
+    out_dir: str | Path,
+    train_frac: float = 0.8,
+    num_samples: Optional[int] = None,
+    seed: int = 0,
+    task_filter: Optional[list[str]] = None,
+) -> MathVistaSplitStats:
+    """Select rows (optional task filter + subsample), shuffle
+    deterministically, and write a disjoint train/test split -- each its
+    own self-contained `prompts.jsonl` + `images/` directory under
+    `<out_dir>/train` and `<out_dir>/test`. Split out from
+    `download_mathvista` so it's testable without network access -- see
+    `tests/test_mathvista.py`."""
+    if not 0.0 < train_frac < 1.0:
+        raise ValueError(f"train_frac must be in (0, 1), got {train_frac}")
+
+    selected = _select_rows(rows, num_samples, seed, task_filter)
+    shuffled = list(selected)
+    random.Random(seed).shuffle(shuffled)
+    n_train = int(round(len(shuffled) * train_frac))
+    train_rows, test_rows = shuffled[:n_train], shuffled[n_train:]
+    if not train_rows or not test_rows:
+        raise ValueError(
+            f"train/test split produced an empty split ({len(train_rows)} "
+            f"train / {len(test_rows)} test) from {len(shuffled)} selected "
+            f"rows; lower train_frac's distance from 0.5, raise num_samples, "
+            f"or loosen task_filter."
+        )
+
+    out_dir = Path(out_dir)
+    train_stats = export_rows(train_rows, out_dir / "train")
+    test_stats = export_rows(test_rows, out_dir / "test")
+    print(f"Split {len(shuffled)} selected examples into "
+          f"{len(train_rows)} train / {len(test_rows)} test (train_frac={train_frac}).")
+    return MathVistaSplitStats(train=train_stats, test=test_stats)
 
 
 def export_rows(
@@ -146,19 +213,17 @@ def export_rows(
 ) -> MathVistaExportStats:
     """Convert an iterable of MathVista-schema rows (a live HF `Dataset`,
     or a plain list of dicts for testing) into `prompts.jsonl` + saved
-    images. Split out from `download_mathvista` so the conversion logic
-    is testable without any network access -- see `tests/test_mathvista.py`.
-    """
+    images, no train/test split. Used directly by tests and by
+    `export_train_test_split` for each half of the split; `num_samples`/
+    `task_filter` here are for the (less common) single-split use case --
+    `download_mathvista` applies them once *before* splitting so train
+    and test are disjoint subsamples of the same filtered pool, not
+    independently resampled."""
     out_dir = Path(out_dir)
     image_dir = out_dir / "images"
     image_dir.mkdir(parents=True, exist_ok=True)
 
-    rows = list(rows)
-    if task_filter:
-        rows = [r for r in rows if (r.get("metadata") or {}).get("task") in task_filter]
-    if num_samples is not None and num_samples < len(rows):
-        random.Random(seed).shuffle(rows)
-        rows = rows[:num_samples]
+    rows = _select_rows(rows, num_samples, seed, task_filter)
 
     prompts_path = out_dir / "prompts.jsonl"
     task_counts: dict[str, int] = {}
