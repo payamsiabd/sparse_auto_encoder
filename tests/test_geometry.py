@@ -14,7 +14,8 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rise.geometry import ColumnAssociation, load_association, predict_label, save_association
+from rise.geometry import ColumnAssociation, encode_activations, load_association, predict_label, save_association
+from rise.sae import SparseAutoencoder
 
 
 def _fake_association() -> ColumnAssociation:
@@ -73,6 +74,29 @@ def test_predict_label_top_k_majority_vote() -> None:
     assert predict_label(code, assoc, top_k=2) == "visual_reflection"
 
 
+def test_encode_activations_matches_direct_encode_call() -> None:
+    """Regression test for a real crash: scripts/06_layer_sweep.py's SAE
+    (from train_sae, which moves it to TrainConfig.device -- CUDA when
+    available) was being called with activations loaded straight from
+    disk (always CPU), raising "Expected all tensors to be on the same
+    device". encode_activations exists specifically to move the input to
+    wherever the SAE's parameters live before calling encode() -- this
+    sandbox has no GPU to exercise the actual cross-device path, but this
+    at least locks down that the wrapper computes the same result as
+    calling sae.encode directly does when devices already match (and
+    returns a detached CPU tensor either way, which callers rely on)."""
+    torch.manual_seed(0)
+    sae = SparseAutoencoder(d_in=8, d_hidden=4, activation="topk", k=2)
+    activations = torch.randn(5, 8).clamp(min=0)
+
+    direct = sae.encode(activations.float() * 1.5)
+    via_wrapper = encode_activations(sae, activations, input_scale=1.5)
+
+    assert torch.allclose(direct, via_wrapper)
+    assert via_wrapper.device.type == "cpu"
+    assert not via_wrapper.requires_grad
+
+
 if __name__ == "__main__":
     test_save_and_load_association_round_trips()
     print("test_save_and_load_association_round_trips: OK")
@@ -82,3 +106,5 @@ if __name__ == "__main__":
     print("test_predict_label_falls_back_to_others_when_unclaimed: OK")
     test_predict_label_top_k_majority_vote()
     print("test_predict_label_top_k_majority_vote: OK")
+    test_encode_activations_matches_direct_encode_call()
+    print("test_encode_activations_matches_direct_encode_call: OK")

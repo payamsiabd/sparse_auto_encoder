@@ -268,6 +268,15 @@ regardless of which `geometry.method` produced it)
 — the artifact steps 4 and 5 below build behavior vectors from, so
 nothing downstream needs to recompute it from the train activations.
 
+*Device note:* `scripts/06_layer_sweep.py` trains a fresh SAE per layer
+via `train_sae`, which (unlike `load_sae`, used by scripts 05/07/08)
+moves the SAE to a CUDA device automatically when one's available --
+while cached activations always load onto CPU. `rise.geometry.encode_activations`
+and `SparseAutoencoder.reasoning_vectors()` handle that mismatch
+internally (move-then-encode, always return CPU), so this is transparent
+to every script; mentioned here only because it's the one real
+GPU-vs-CPU trap in this codebase if you're extending it.
+
 Run `scripts/06_layer_sweep.py` to get the full per-layer curve (trains
 one SAE per cached layer) and pick the layer where `visual_reflection`
 is most separable from plain `reflection`/`backtracking` — the paper
@@ -383,8 +392,8 @@ had none of those available (see the environment note above).
   falling back to a hub download -- no network call.
 - `tests/test_geometry.py` validates `rise.geometry.predict_label` (the
   post-hoc, activation-only behavior classifier `scripts/08` scores
-  against annotations) and `save_association`/`load_association`'s
-  round-trip, against a synthetic `ColumnAssociation`.
+  against annotations), `save_association`/`load_association`'s
+  round-trip, and `encode_activations`' device handling (see below).
 - `tests/test_evaluate_report.py` validates the precision/recall/F1/
   confusion-matrix computation in `scripts/08_evaluate_on_test.py`
   against known label sequences with a hand-computable answer.

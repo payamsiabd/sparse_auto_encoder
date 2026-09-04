@@ -40,7 +40,7 @@ import numpy as np
 import torch
 
 from .annotate import Annotation, Label
-from .geometry import ColumnAssociation, associate_columns_with_behaviors
+from .geometry import ColumnAssociation, associate_columns_with_behaviors, encode_activations
 from .sae import SparseAutoencoder
 
 
@@ -157,7 +157,7 @@ def associate_columns_by_stats(
     otherwise pass ~1% of them by chance alone.
     """
     assert activations.shape[0] == len(annotations)
-    z = sae.encode(activations.float() * input_scale).numpy()
+    z = encode_activations(sae, activations, input_scale).numpy()
     D = z.shape[1]
     labels: list[Label] = sorted({a.label for a in annotations})
     p_threshold = max_p / D if bonferroni else max_p
