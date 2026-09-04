@@ -26,8 +26,9 @@ def main() -> None:
     print(f"Loaded {activations.shape[0]} activations of dim {activations.shape[1]} for layer {layer}")
 
     train_cfg = TrainConfig(
-        d_hidden=sae_cfg["d_hidden"], sparsity_coef=sae_cfg["sparsity_coef"],
-        sparsity_penalty=sae_cfg["sparsity_penalty"], batch_size=min(sae_cfg["batch_size"], activations.shape[0]),
+        d_hidden=sae_cfg["d_hidden"], activation=sae_cfg["activation"], k=sae_cfg["k"],
+        sparsity_coef=sae_cfg["sparsity_coef"], sparsity_penalty=sae_cfg["sparsity_penalty"],
+        batch_size=min(sae_cfg["batch_size"], activations.shape[0]),
         lr=sae_cfg["lr"], warmup_frac=sae_cfg["warmup_frac"], num_epochs=sae_cfg["num_epochs"],
         normalize_inputs=sae_cfg["normalize_inputs"], seed=sae_cfg["seed"],
     )

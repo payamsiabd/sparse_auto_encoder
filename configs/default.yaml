@@ -68,8 +68,16 @@ activations:
 
 sae:
   d_hidden: 2048        # D, dictionary size (paper default for a small model)
-  sparsity_coef: 0.002  # lambda
-  sparsity_penalty: "l1"
+  # "topk" (recommended): exactly `k` active latents per sample, guaranteed
+  # by construction -- no coefficient tuning needed. "relu": the paper's
+  # literal Eq. 1 recipe, sparsity only encouraged indirectly via
+  # sparsity_coef, which needs re-tuning per model/layer (see rise/sae.py's
+  # module docstring -- this is what produced a ~91% dense, uninterpretable
+  # code on Qwen3-VL-4B's layer 16 with the paper's own reported lambda).
+  activation: "topk"
+  k: 32                 # active latents per sample (activation="topk"); ~1-5% of d_hidden is a reasonable start
+  sparsity_coef: 0.002  # lambda; only used when activation="relu"
+  sparsity_penalty: "l1"  # only used when activation="relu"
   batch_size: 1024
   lr: 0.0001
   warmup_frac: 0.10

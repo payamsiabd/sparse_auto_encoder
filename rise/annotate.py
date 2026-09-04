@@ -201,6 +201,30 @@ def load_annotations(path: str) -> list[Annotation]:
     return out
 
 
+def to_binary_labels(
+    annotations: list[Annotation],
+    reflective_labels: tuple[Label, ...] = ("reflection", "backtracking", "visual_reflection"),
+) -> list[Annotation]:
+    """Collapse the fine-grained 4-class taxonomy into two groups:
+    "reflection" (any reasoning-interruption behavior -- reflection,
+    backtracking, and visual_reflection are all, at this coarser
+    resolution, "the model pausing to re-check or reconsider something")
+    vs "others" (ordinary forward-moving reasoning).
+
+    Useful as the primary decoder-geometry view: a dense/under-trained
+    SAE, or simply too little data, can make the 4-way split look noisy
+    even when reflection-vs-not is cleanly separable, since 3 of the 4
+    classes are lumped together and diluted across sub-types. Checking
+    the binary split first answers "does this behavior cluster at all"
+    before "which sub-type does it cluster into" -- see
+    `scripts/05_annotate_and_visualize.py`, which produces both.
+    """
+    return [
+        dataclasses.replace(a, label=("reflection" if a.label in reflective_labels else "others"))
+        for a in annotations
+    ]
+
+
 def agreement_ratio(a: list[Annotation], b: list[Annotation]) -> float:
     """Fraction of steps (matched by (prompt_id, step_index)) where two
     annotation sets agree -- reproduces the metric used in Fig. 10."""
