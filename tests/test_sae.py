@@ -75,28 +75,18 @@ def best_match_cosine_similarities(W_true: torch.Tensor, W_learned: torch.Tensor
     return best
 
 
-def test_sae_recovers_dictionary() -> None:
-    torch.manual_seed(0)
-    d, m, k, n = 96, 24, 3, 30_000
+def _make_synthetic_problem(seed: int = 0):
+    torch.manual_seed(seed)
+    d, m, k_true, n = 96, 24, 3, 30_000
     alpha, noise_std = 1.0, 0.02
 
     W_true = _make_incoherent_dictionary(d, m, seed=1)
-    A = _sample_sparse_codes(m, k, n, alpha=alpha, seed=2)
+    A = _sample_sparse_codes(m, k_true, n, alpha=alpha, seed=2)
     H = A @ W_true.t() + noise_std * torch.randn(n, d)
+    return W_true, H, d, m, k_true
 
-    # SAE dictionary size D is 2x overcomplete relative to the true m,
-    # as in the paper's own D=2048 >> (a handful of true behaviors)
-    # setup; sparsity_coef is tuned (higher than the paper's 2e-3 default,
-    # which was calibrated for real, larger-scale LLM activations) so
-    # that, on this small synthetic problem, the sparsity term is strong
-    # enough relative to reconstruction to actually enforce a sparse code
-    # rather than a dense one that also reconstructs well.
-    cfg = TrainConfig(
-        d_hidden=2 * m, sparsity_coef=3e-2, batch_size=1024, lr=1e-2,
-        warmup_frac=0.05, num_epochs=100, normalize_inputs=False, seed=0, log_every=50,
-    )
-    sae, history = train_sae(H, cfg)
 
+def _assert_recovers_dictionary(W_true: torch.Tensor, sae, history: dict, min_mean_sim: float = 0.85, min_frac: float = 0.7) -> None:
     sims = best_match_cosine_similarities(W_true, sae.reasoning_vectors())
     mean_sim = float(sims.mean())
     frac_recovered = float((sims > 0.9).mean())
@@ -105,12 +95,50 @@ def test_sae_recovers_dictionary() -> None:
           f"fraction of true columns recovered (>0.9 cos-sim): {frac_recovered:.2f}; "
           f"final recon_loss={history['recon_loss'][-1]:.4f} L0={history['l0'][-1]:.2f}")
 
-    assert mean_sim > 0.85, f"SAE failed to recover the synthetic dictionary (mean cos-sim={mean_sim:.3f})"
-    assert frac_recovered > 0.7, f"Too few dictionary columns recovered ({frac_recovered:.2f})"
+    assert mean_sim > min_mean_sim, f"SAE failed to recover the synthetic dictionary (mean cos-sim={mean_sim:.3f})"
+    assert frac_recovered > min_frac, f"Too few dictionary columns recovered ({frac_recovered:.2f})"
 
     # Decoder columns must stay unit-norm throughout training (Sec. 4.4.1's invariant).
     norms = sae.reasoning_vectors().norm(dim=1)
     assert torch.allclose(norms, torch.ones_like(norms), atol=1e-4), "decoder columns are not unit-norm"
+
+
+def test_relu_sae_recovers_dictionary() -> None:
+    """activation="relu" (the paper's literal Eq. 1 recipe): sparsity
+    only encouraged indirectly via sparsity_coef, which -- as this
+    project discovered the hard way on a real 2560-dim Qwen3-VL layer,
+    where the paper's own reported lambda=2e-3 left the code ~91% dense
+    -- needs deliberate, problem-specific tuning to actually bite. Tuned
+    here (well above the paper's default) specifically for this small
+    synthetic problem's scale; see test_topk_sae_recovers_dictionary for
+    the activation="topk" alternative that needs no such tuning."""
+    W_true, H, d, m, k_true = _make_synthetic_problem()
+
+    cfg = TrainConfig(
+        d_hidden=2 * m, activation="relu", sparsity_coef=3e-2, batch_size=1024, lr=1e-2,
+        warmup_frac=0.05, num_epochs=100, normalize_inputs=False, seed=0, log_every=50,
+    )
+    sae, history = train_sae(H, cfg)
+    _assert_recovers_dictionary(W_true, sae, history)
+
+
+def test_topk_sae_recovers_dictionary() -> None:
+    """activation="topk": k set close to the true generative sparsity
+    (k_true=3) recovers the dictionary directly, with exact L0=k
+    sparsity guaranteed by construction rather than tuned via a loss
+    coefficient -- this is the project's default for real model
+    activations precisely because it removes that tuning step."""
+    W_true, H, d, m, k_true = _make_synthetic_problem()
+
+    cfg = TrainConfig(
+        d_hidden=2 * m, activation="topk", k=k_true + 1, batch_size=1024, lr=1e-2,
+        warmup_frac=0.05, num_epochs=100, normalize_inputs=False, seed=0, log_every=50,
+    )
+    sae, history = train_sae(H, cfg)
+    _assert_recovers_dictionary(W_true, sae, history)
+
+    # Sparsity is exact by construction, unlike the L1 variant above.
+    assert abs(history["l0"][-1] - (k_true + 1)) < 1e-6
 
 
 def test_sae_forward_shapes() -> None:
@@ -123,8 +151,34 @@ def test_sae_forward_shapes() -> None:
     assert out.loss.item() >= 0
 
 
+def test_topk_activation_enforces_exact_sparsity() -> None:
+    """Independent of training: activation="topk" must zero every latent
+    outside the top-k, for every sample, on the very first forward pass
+    -- this is what makes L0 exact by construction rather than a
+    training-time consequence of a coefficient."""
+    torch.manual_seed(0)
+    sae = SparseAutoencoder(d_in=32, d_hidden=16, activation="topk", k=5)
+    h = torch.randn(10, 32)
+    out = sae(h)
+
+    active_per_sample = (out.z > 0).sum(dim=-1)
+    assert (active_per_sample <= 5).all(), "topk activation let through more than k active latents"
+    assert out.sparsity_loss.item() == 0.0, "topk activation should carry no sparsity loss term"
+
+    with_bad_k = False
+    try:
+        SparseAutoencoder(d_in=32, d_hidden=16, activation="topk", k=None)
+    except ValueError:
+        with_bad_k = True
+    assert with_bad_k, "activation='topk' without a valid k should raise"
+
+
 if __name__ == "__main__":
     test_sae_forward_shapes()
     print("test_sae_forward_shapes: OK")
-    test_sae_recovers_dictionary()
-    print("test_sae_recovers_dictionary: OK")
+    test_topk_activation_enforces_exact_sparsity()
+    print("test_topk_activation_enforces_exact_sparsity: OK")
+    test_relu_sae_recovers_dictionary()
+    print("test_relu_sae_recovers_dictionary: OK")
+    test_topk_sae_recovers_dictionary()
+    print("test_topk_sae_recovers_dictionary: OK")

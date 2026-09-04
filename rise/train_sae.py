@@ -5,7 +5,17 @@ Paper hyperparameters (Sec. 4.2, used as defaults here):
     batch size         = 1024
     optimizer          = Adam
     learning rate      = 1e-4, 10% linear warmup, then cosine decay to 0
-    sparsity coef λ    = 2e-3
+    sparsity coef λ    = 2e-3 (only used with activation="relu", see rise/sae.py)
+
+Default ``activation`` here is ``"topk"``, not the paper's ``"relu"``:
+an L1-penalty SAE's sparsity depends on how ``sparsity_coef`` interacts
+with the target model's activation scale, which varies enough across
+models/layers that the paper's own reported lambda can land anywhere
+from mildly sparse to nearly dense elsewhere (their Fig. 9 shows ~15%
+density on DeepSeek-R1-1.5B with lambda=2e-3; a different model's
+residual stream can end up far denser with the same value, which is
+exactly the failure mode ``activation="topk"`` avoids by construction
+-- see ``rise/sae.py``'s module docstring for the full reasoning).
 
 Input: a single tensor of step-boundary activations {h^l_i} of shape
 (N, d) produced by ``rise.activations`` for one chosen layer l (Sec.
@@ -27,8 +37,10 @@ from .sae import SparseAutoencoder
 @dataclasses.dataclass
 class TrainConfig:
     d_hidden: int = 2048           # D, SAE dictionary size
-    sparsity_coef: float = 2e-3    # lambda
-    sparsity_penalty: str = "l1"
+    activation: str = "topk"       # "topk" (recommended, exact sparsity) or "relu" (paper's literal Eq. 1)
+    k: Optional[int] = 32          # active latents per sample when activation="topk"
+    sparsity_coef: float = 2e-3    # lambda; only used when activation="relu"
+    sparsity_penalty: str = "l1"   # only used when activation="relu"
     batch_size: int = 1024
     lr: float = 1e-4
     warmup_frac: float = 0.10
@@ -92,6 +104,8 @@ def train_sae(
         d_hidden=config.d_hidden,
         sparsity_coef=config.sparsity_coef,
         sparsity_penalty=config.sparsity_penalty,
+        activation=config.activation,
+        k=config.k,
     ).to(device)
 
     optimizer = torch.optim.Adam(sae.parameters(), lr=config.lr)
@@ -153,6 +167,8 @@ def load_sae(path: str | Path, device: str = "cpu") -> tuple[SparseAutoencoder, 
         d_hidden=cfg["d_hidden"],
         sparsity_coef=cfg["sparsity_coef"],
         sparsity_penalty=cfg["sparsity_penalty"],
+        activation=cfg.get("activation", "relu"),
+        k=cfg.get("k"),
     )
     sae.load_state_dict(ckpt["state_dict"])
     sae.to(device)

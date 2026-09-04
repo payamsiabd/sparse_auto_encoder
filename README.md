@@ -23,7 +23,7 @@ plumbing is the main engineering addition here (see `rise/activations.py`).
 
 | Paper (Sec.) | This code |
 |---|---|
-| 3.1 SAE, Eq. 1-2 | `rise/sae.py::SparseAutoencoder` |
+| 3.1 SAE, Eq. 1-2 | `rise/sae.py::SparseAutoencoder` (`activation="relu"`; default is `"topk"`, a practical deviation -- see step 2 below) |
 | 3.2 Thought Representation Construction | `rise/activations.py`, `rise/utils.py::split_into_steps` |
 | 4.2 Setup (D=2048, batch 1024, lr 1e-4, λ=2e-3, Adam+cosine) | `rise/train_sae.py::TrainConfig` defaults, `configs/default.yaml` |
 | 4.3 Decoder geometry, UMAP, Fig. 2 | `rise/geometry.py::umap_projection`, `plot_decoder_geometry` |
@@ -181,15 +181,31 @@ python scripts/04_train_sae.py
 ```
 
 Matches Sec. 4.2's hyperparameters by default (`D=2048`, batch 1024,
-Adam lr=1e-4 with 10% warmup + cosine decay, λ=2e-3, on `sae.train_layer`
-= layer 16). `||z||_0` in the paper's loss (Eq. 2) is non-differentiable;
-as is standard for this SAE family (the paper itself cites Cunningham
-et al., 2023 for the "standard SAE" recipe it uses), we optimize the L1
-relaxation and log the true L0 as a diagnostic (`sae.sparsity_penalty:
-l1` in the config; `l0` selects a literal straight-through estimator
-instead). Decoder columns are kept exactly unit-norm throughout training
-(gradient-projection + renormalize each step), matching the invariant
-Sec. 4.4.1 relies on for interventions.
+Adam lr=1e-4 with 10% warmup + cosine decay, on `sae.train_layer` =
+layer 16), with one deliberate deviation: `sae.activation` defaults to
+**`"topk"`**, not the paper's literal `"relu"` + L1-penalty (Eq. 2)
+recipe. An L1-penalty SAE's sparsity depends on how `sae.sparsity_coef`
+(λ) interacts with the target model's activation scale, which varies
+enough across models/layers that a coefficient tuned for one setup can
+land anywhere from mildly sparse to nearly dense on another — even the
+paper's own reported λ=2e-3 only reaches ~15% density on DeepSeek-R1-1.5B
+(their Fig. 9); on Qwen3-VL-4B's larger, differently-scaled layer-16
+residual stream, the same λ leaves the code **~91% dense** (L0=1874/2048
+observed in practice) — not sparse, not interpretable, and not what
+Fig. 2's clean clusters need. `"topk"` (Gao et al., 2024, "Scaling and
+Evaluating Sparse Autoencoders") sidesteps the tuning problem entirely:
+only the `sae.k` largest activations per sample survive, so L0 is
+*exactly* `k` by construction — no coefficient search. `sae.k: 32` is a
+reasonable starting point for `d_hidden: 2048`; raise/lower it and
+re-run if the geometry still looks off. `"relu"` (with `sae.sparsity_coef`/
+`sae.sparsity_penalty`) remains available for a literal reproduction of
+the paper's Eq. 1-2, but expect to tune `sparsity_coef` up substantially
+from the paper's default for it to actually sparsify. See
+`rise/sae.py`'s module docstring for the full reasoning either way.
+Decoder columns are kept exactly unit-norm throughout training
+(gradient-projection + renormalize each step, independent of
+`activation`), matching the invariant Sec. 4.4.1 relies on for
+interventions.
 
 ### 3. Annotate steps and inspect the decoder geometry
 
@@ -204,9 +220,23 @@ see `rise/annotate.py::KeywordAnnotator`; swap in an LLM judge with
 paper's GPT-5/GPT-4o/Claude judges and their reported >85% agreement
 with keyword matching), then reproduces Fig. 2 (UMAP of decoder columns,
 highlighted per behavior) and Fig. 3 (normalized silhouette scores) for
-the layer the SAE was trained on. Also writes
-`runs/mathvista/geometry/association_layer16.json` — which decoder
-columns belong to which behavior, per `rise.geometry.ColumnAssociation`
+the layer the SAE was trained on -- as **two** geometry views:
+
+- `geometry_layer16.png` (primary): **binary** reflection vs. others --
+  `reflection`/`backtracking`/`visual_reflection` collapsed into one
+  "reflection" group (`rise.annotate.to_binary_labels`) against
+  `others`. Answers the coarser, usually cleaner-looking question first:
+  does reasoning-interruption cluster separately from ordinary forward
+  reasoning *at all*.
+- `geometry_layer16_finegrained.png`: the original 4-way split, which
+  you still need for this project's actual goal (isolating *visual*
+  reflection specifically) once the binary view confirms reflection
+  clusters at all. If the fine-grained clusters still look noisy even
+  with a properly sparse (`topk`) SAE, it usually means too little
+  data (raise `mathvista.num_samples`) rather than a code problem.
+
+Also writes `runs/mathvista/geometry/association_layer16.json` — the
+**fine-grained** column↔behavior mapping (`rise.geometry.ColumnAssociation`)
 — the artifact steps 4 and 5 below build behavior vectors from, so
 nothing downstream needs to recompute it from the train activations.
 
@@ -291,7 +321,15 @@ had none of those available (see the environment note above).
   random dictionary `W`, k-sparse codes, bounded noise): after training,
   the learned decoder columns should recover `W`'s columns up to
   permutation and scaling (cosine similarity ~1 to the best-matching
-  true column).
+  true column) -- for both `activation="relu"` (tuned `sparsity_coef`)
+  and `activation="topk"` (k set near the true sparsity), plus a direct
+  check that `"topk"` enforces exact per-sample sparsity on a single
+  forward pass, independent of training.
+- `tests/test_annotate.py` validates the keyword annotator's label
+  precedence and `to_binary_labels`'s collapse of the 4-class taxonomy
+  into reflection/others (including that it doesn't mutate its input
+  and that agreement/disagreement between two annotation sets changes
+  correctly once both are binarized).
 - `tests/test_activations_locate.py` validates the trickiest piece of
   `rise/activations.py` -- correctly locating each `"\n\n"` step
   delimiter's token position *after* image-token expansion -- against a
