@@ -30,6 +30,24 @@ class ColumnAssociation:
     behavior_column_counts: dict[Label, np.ndarray]      # label -> (D,) count of times each column was top-active
 
 
+def encode_activations(sae: SparseAutoencoder, activations: torch.Tensor, input_scale: float = 1.0) -> torch.Tensor:
+    """``sae.encode(activations * input_scale)``, robust to the SAE and
+    ``activations`` living on different devices -- a real trap here:
+    ``load_sae`` defaults to CPU, but ``train_sae`` moves the SAE to
+    ``TrainConfig.device`` (CUDA when available), while
+    ``rise.store.load_layer_activations`` always returns a plain CPU
+    tensor. Calling a CUDA-resident SAE's ``encode`` directly on a CPU
+    tensor raises ``RuntimeError: Expected all tensors to be on the
+    same device``; the result is moved back to CPU (and detached)
+    since every caller here works with it via numpy/annotations that
+    have no notion of device.
+    """
+    device = next(sae.parameters()).device
+    with torch.no_grad():
+        z = sae.encode(activations.float().to(device) * input_scale)
+    return z.detach().cpu()
+
+
 @torch.no_grad()
 def associate_columns_with_behaviors(
     sae: SparseAutoencoder,
@@ -39,7 +57,7 @@ def associate_columns_with_behaviors(
     top_k_per_step: int = 1,
 ) -> ColumnAssociation:
     assert activations.shape[0] == len(annotations)
-    z = sae.encode(activations.float() * input_scale)  # (N, D)
+    z = encode_activations(sae, activations, input_scale)  # (N, D)
     D = z.shape[1]
 
     counts: dict[Label, np.ndarray] = {}

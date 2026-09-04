@@ -88,9 +88,10 @@ def main() -> None:
         if not response.steps:
             continue
         step_acts = extract_step_activations(handle, images, messages, response, [layer])
+        sae_device = next(sae.parameters()).device
         for sa in step_acts:
-            h = sa.hidden_states[layer].float() * meta["input_scale"]
-            code = sae.encode(h)
+            h = (sa.hidden_states[layer].float() * meta["input_scale"]).to(sae_device)
+            code = sae.encode(h).cpu()
             pred = predict_label(code, assoc, top_k=geo_cfg["top_k_per_step"])
             true = annotator.annotate(sa.step_text)
             y_true.append(true)

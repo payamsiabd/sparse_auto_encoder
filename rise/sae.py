@@ -219,5 +219,9 @@ class SparseAutoencoder(nn.Module):
     def reasoning_vectors(self) -> torch.Tensor:
         """Return the decoder column matrix W_decoder in R^{D x d}, i.e.
         the discovered reasoning vectors {w_i}, already unit-normalized
-        as long as training kept the unit-norm invariant."""
-        return self.W_decoder.detach()
+        as long as training kept the unit-norm invariant. Always a CPU
+        tensor regardless of which device the SAE itself lives on --
+        every consumer (numpy/UMAP/sklearn in rise/geometry.py, JSON
+        serialization) expects one, and this is the one place that
+        needs to know to move it rather than every call site."""
+        return self.W_decoder.detach().cpu()
